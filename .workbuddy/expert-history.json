@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "sessions": {
+    "d583205ebb154c51adebd05eb7b88a2c": [
+      {
+        "expertId": "SeniorDeveloper",
+        "name": "Will",
+        "profession": "高级开发工程师",
+        "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/02-Engineering/SeniorDeveloper/SeniorDeveloper.png",
+        "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/02-Engineering/SeniorDeveloper/SeniorDeveloper_zh.md",
+        "usedAt": 1774682226098,
+        "industryId": "all"
+      },
+      {
+        "expertId": "GrowthHacker",
+        "name": "Nia",
+        "profession": "增长黑客",
+        "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/03-Marketing/GrowthHacker/GrowthHacker.png",
+        "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/03-Marketing/GrowthHacker/GrowthHacker_zh.md",
+        "usedAt": 1774678786761,
+        "industryId": "11-ProfessionalServices"
+      }
+    ]
+  },
+  "lastUpdated": 1774682368496
+}
