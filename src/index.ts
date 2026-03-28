@@ -8,72 +8,70 @@
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import Tesseract from 'tesseract.js';
 
 // ============ 弹窗检测与关闭 =================
+
+// 弹窗检测区域（右上角，消息提醒通常在这里）
+const POPUP_REGION = { x: 1400, y: 0, w: 200, h: 150 };
+
+/**
+ * 检测是否有弹窗需要关闭
+ * 通过 OCR 检测右上角区域是否包含弹窗关键词
+ */
+async function detectPopup(): Promise<boolean> {
+  // 截取右上角区域
+  const popupImg = '/tmp/qianniu-popup-detect.png';
+  try {
+    execSync(`screencapture -x -R ${POPUP_REGION.x},${POPUP_REGION.y},${POPUP_REGION.w},${POPUP_REGION.h} ${popupImg}`, { timeout: 5000 });
+  } catch {
+    return false;
+  }
+  
+  // OCR 识别
+  try {
+    const { data: { text } } = await Tesseract.recognize(popupImg, 'chi_sim+eng', {
+      logger: () => {}
+    });
+    
+    const textLower = text.toLowerCase();
+    // 检测弹窗关键词
+    const popupKeywords = ['消息提醒', '系统消息', '通知', '温馨提示'];
+    const hasPopup = popupKeywords.some(kw => text.includes(kw));
+    
+    if (hasPopup) {
+      console.log(`🔍 检测到弹窗: ${text.substring(0, 50)}...`);
+    }
+    return hasPopup;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 检测并关闭千牛弹窗
  * 返回是否检测到弹窗
  */
-function closePopups(): boolean {
-  let popupClosed = false;
-  
-  // 方法1: 通过 AppleScript 关闭窗口
-  const script = `
-    tell application "System Events"
-      tell process "${ALIWORKBENCH}"
-        set popupFound to false
-        -- 尝试关闭通知弹窗（包括"单聊消息"、"新消息"等）
-        try
-          set wns to every window whose name contains "通知" or name contains "消息" or name contains "提示" or name contains "单聊"
-          if (count of wns) > 0 then
-            set popupFound to true
-            repeat with w in wns
-              try
-                set closeBtn to button 1 of w
-                click closeBtn
-              end try
-            end repeat
-          end if
-        end try
-        
-        -- 尝试关闭右下角气泡通知
-        try
-          set notifs to every static text whose value contains "有新的"
-          if (count of notifs) > 0 then
-            set popupFound to true
-          end if
-        end try
-        
-        return popupFound
-      end tell
-    end tell
-  `;
-  
-  try {
-    const result = runScript(script).trim();
-    popupClosed = result === 'true';
-  } catch {}
-  
-  // 方法2: 按 ESC 键关闭弹窗（很多弹窗按 ESC 可以关闭）
-  if (!popupClosed) {
-    try {
-      runScript('tell application "System Events" to keystroke escape');
-      execSync('sleep 0.2');
-      popupClosed = true;
-    } catch {}
+async function closePopups(): Promise<boolean> {
+  // 先检测是否有弹窗
+  const hasPopup = await detectPopup();
+  if (!hasPopup) {
+    return false;
   }
   
-  // 方法3: 点击屏幕中央/通知区域关闭（针对右下角气泡）
-  if (!popupClosed) {
-    // 点击右下角通知区域尝试关闭
+  // 有弹窗，点击关闭消息提醒按钮（固定坐标）
+  const closeBtnPoint = loadRecordedPoint('关闭这个消息提醒');
+  if (closeBtnPoint) {
     try {
-      execSync('osascript -e \'tell application "System Events" to click at {1800, 900}\'', { timeout: 1000 });
+      // 点击关闭按钮
+      execSync(`cliclick c:${closeBtnPoint.x},${closeBtnPoint.y}`);
       execSync('sleep 0.2');
-    } catch {}
+      return true;
+    } catch {
+      return false;
+    }
   }
-  
-  return popupClosed;
+  return false;
 }
 
 /**
@@ -229,6 +227,10 @@ function activateReception(): void {
 
 /**
  * 从 recordings.json 加载记录的坐标点
+ * 支持三种模式：
+ * - fixed: 固定坐标（屏幕绝对坐标，不依赖窗口）
+ * - ratio: 比例坐标（相对于窗口的比例）
+ * - offset: 窗口偏移量（相对于窗口的固定像素偏移）
  */
 function loadRecordedPoint(pointName: string): { x: number; y: number } | null {
   const recordingsPath = '/Users/liuyuxuanyi/Documents/qianniu-automation/data/recordings.json';
@@ -239,35 +241,89 @@ function loadRecordedPoint(pointName: string): { x: number; y: number } | null {
     const point = data.points?.find((p: any) => p.name === pointName);
     if (!point) return null;
     
-    // 获取窗口实际位置
-    const windowScript = `
-      tell application "System Events"
-        tell process "${ALIWORKBENCH}"
-          try
-            tell window "${point.windowName}"
-              set p to position
-              set s to size
-              return (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s)
-            end tell
-          on error
-            return "NOT_FOUND"
-          end try
+    const pointType = point.type || 'ratio'; // 默认是比例模式
+    
+    // ========== 模式1: 固定坐标 (fixed) ==========
+    if (pointType === 'fixed' || ('fixedX' in point && 'fixedY' in point)) {
+      return { x: point.fixedX as number, y: point.fixedY as number };
+    }
+    
+    // ========== 模式2: 比例坐标 (ratio) ==========
+    if (pointType === 'ratio' || point.ratioX !== undefined || point.ratioY !== undefined) {
+      if (!point.windowName) {
+        console.log(`⚠️ 录制点 "${pointName}" 缺少 windowName`);
+        return null;
+      }
+      
+      const windowScript = `
+        tell application "System Events"
+          tell process "${ALIWORKBENCH}"
+            try
+              tell window "${point.windowName}"
+                set p to position
+                set s to size
+                return (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s)
+              end tell
+            on error
+              return "NOT_FOUND"
+            end try
+          end tell
         end tell
-      end tell
-    `;
+      `;
+      
+      const result = runScript(windowScript);
+      if (result === 'NOT_FOUND' || !result) {
+        console.log(`⚠️ 找不到窗口: ${point.windowName}`);
+        return null;
+      }
+      
+      const parts = result.split(',').filter((s: string) => s.trim()).map((s: string) => parseInt(s.trim(), 10));
+      if (parts.length < 4) return null;
+      
+      const [wx, wy, ww, wh] = parts;
+      const x = Math.round(wx + (point.ratioX || 0) * ww);
+      const y = Math.round(wy + (point.ratioY || 0) * wh);
+      
+      return { x, y };
+    }
     
-    const result = runScript(windowScript);
-    if (result === 'NOT_FOUND' || !result) return null;
+    // ========== 模式3: 窗口偏移量 (offset) ==========
+    if (pointType === 'offset') {
+      if (!point.windowName || point.offsetX === undefined || point.offsetY === undefined) {
+        console.log(`⚠️ 录制点 "${pointName}" 缺少 windowName 或 offsetX/offsetY`);
+        return null;
+      }
+      
+      const windowScript = `
+        tell application "System Events"
+          tell process "${ALIWORKBENCH}"
+            try
+              tell window "${point.windowName}"
+                set p to position
+                return (item 1 of p) & "," & (item 2 of p)
+              end tell
+            on error
+              return "NOT_FOUND"
+            end try
+          end tell
+        end tell
+      `;
+      
+      const result = runScript(windowScript);
+      if (result === 'NOT_FOUND' || !result) {
+        console.log(`⚠️ 找不到窗口: ${point.windowName}`);
+        return null;
+      }
+      
+      const [wx, wy] = result.split(',').map(Number);
+      const x = wx + point.offsetX;
+      const y = wy + point.offsetY;
+      
+      return { x, y };
+    }
     
-    const parts = result.split(',').filter((s: string) => s.trim()).map((s: string) => parseInt(s.trim(), 10));
-    if (parts.length < 4) return null;
-    
-    const [wx, wy, ww, wh] = parts;
-    // 根据比例计算实际坐标
-    const x = Math.round(wx + point.ratioX * ww);
-    const y = Math.round(wy + point.ratioY * wh);
-    
-    return { x, y };
+    console.log(`⚠️ 录制点 "${pointName}" 类型未知: ${pointType}`);
+    return null;
   } catch (e) {
     console.error('加载记录点失败:', e);
     return null;
@@ -349,10 +405,12 @@ function scanBuyerList(): Buyer[] {
  * 点击进入指定买家的聊天
  */
 function openChat(buyer: Buyer): void {
-  activateReception();
-  execSync('sleep 0.5');
-  clickAt(buyer.x, buyer.y);
-  execSync('sleep 1.5');
+  // 通过点击"新的客户咨询"通知让千牛自动跳转
+  const newConsultPoint = loadRecordedPoint('新的客户咨询');
+  if (newConsultPoint) {
+    clickAt(newConsultPoint.x, newConsultPoint.y);
+    execSync('sleep 1');
+  }
 }
 
 /**
@@ -477,18 +535,12 @@ function sendReply(text: string): boolean {
   try {
     console.log('📤 开始发送回复...');
     
-    // 1. 激活接待中心窗口
-    console.log('  → 激活接待中心窗口');
-    activateReception();
-    execSync('sleep 0.5');
-    
-    // 2. 检测并点击"新的客户咨询"弹窗
-    console.log('  → 检查新客户咨询弹窗');
+    // 1. 点击"新的客户咨询"通知，让千牛自动跳转到对应聊天
+    console.log('  → 点击"新的客户咨询"通知');
     const newConsultPoint = loadRecordedPoint('新的客户咨询');
     if (newConsultPoint) {
-      console.log(`  → 点击"新的客户咨询": (${newConsultPoint.x}, ${newConsultPoint.y})`);
       clickAt(newConsultPoint.x, newConsultPoint.y);
-      execSync('sleep 0.8');
+      execSync('sleep 1');
     } else {
       console.log('  ⚠️ 未找到"新的客户咨询"坐标');
     }
@@ -604,31 +656,36 @@ async function monitorCycle(intervalMs = 5000) {
   console.log(`🤖 自动回复: ${autoReplyEnabled ? '已启用' : '已禁用'}`);
   console.log('按 Ctrl+C 停止\n');
 
-  // 激活接待中心窗口
-  activateReception();
-  execSync('sleep 0.3');
-
   // 加载回复配置
   const replyConfig = loadConfig();
   console.log(`📋 已加载 ${replyConfig.rules.filter(r => r.enabled).length} 条生效规则\n`);
 
   while (isRunning) {
     try {
-      // 每次循环先检测并关闭弹窗
-      const hadPopup = closePopups();
+      // 1. 先点击"新的客户咨询"通知（如果有），让千牛自动跳转到对应聊天
+      const newConsultPoint = loadRecordedPoint('新的客户咨询');
+      if (newConsultPoint) {
+        clickAt(newConsultPoint.x, newConsultPoint.y);
+        execSync('sleep 0.5');
+        console.log('📋 已点击"新的客户咨询"通知');
+      }
+      
+      // 2. 检测并关闭其他弹窗
+      const hadPopup = await closePopups();
       if (hadPopup) {
         console.log('🔔 已关闭弹窗');
         execSync('sleep 0.3');
       }
       
+      // 3. 读取消息
       const messages = await readMessages();
       const currentText = messages.join('\n');
 
-      // 首次启动时不发送（lastMessageText为空）
-      // 并且要确保有新消息变化才处理
-      const hasNewChanges = currentText !== lastMessageText && lastMessageText !== '';
+      // 有消息内容才处理（首次启动或后续更新）
+      // 检测到新买家消息时触发自动回复
+      const hasNewContent = currentText.length > 0 && currentText !== lastMessageText;
       
-      if (hasNewChanges) {
+      if (hasNewContent) {
         const newLines = detectChanges(lastMessageText, currentText);
         if (newLines.length > 0) {
           console.log('\n🆕 检测到新消息:');
@@ -690,8 +747,12 @@ async function monitorCycle(intervalMs = 5000) {
 async function patrolCycle() {
   console.log('🔍 开始巡店...\n');
 
-  activateReception();
-  execSync('sleep 1');
+  // 点击"新的客户咨询"通知进入第一个买家聊天
+  const newConsultPoint = loadRecordedPoint('新的客户咨询');
+  if (newConsultPoint) {
+    clickAt(newConsultPoint.x, newConsultPoint.y);
+    execSync('sleep 1');
+  }
 
   const buyers = scanBuyerList();
   console.log(`发现 ${buyers.length} 个接待中:`, buyers.map(b => b.name).join(', '));
@@ -719,9 +780,6 @@ async function patrolCycle() {
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0] || 'monitor';
-
-  activateReception();
-  execSync('sleep 0.5');
 
   switch (cmd) {
     case 'monitor':
@@ -855,9 +913,12 @@ async function main() {
       console.log('=== 智能坐标标定 ===');
       console.log('请按步骤操作，程序会自动计算聊天区域位置\n');
       
-      // 激活接待中心
-      activateReception();
-      execSync('sleep 0.5');
+      // 点击通知进入千牛
+      const newConsultPoint = loadRecordedPoint('新的客户咨询');
+      if (newConsultPoint) {
+        clickAt(newConsultPoint.x, newConsultPoint.y);
+        execSync('sleep 0.5');
+      }
       
       // 步骤1: 获取接待中心窗口位置
       console.log('📋 步骤1: 获取千牛接待中心窗口位置...');
@@ -1161,11 +1222,16 @@ async function main() {
       console.log('  npm run dev delete-template <名称> - 删除模板');
       console.log('  npm run dev find <名称>   - 查找模板在屏幕上的位置');
       console.log('');
-      console.log('  坐标录制:');
-      console.log('  npm run dev record        - 录制点击坐标');
+      console.log('  坐标录制（支持三种模式）:');
+      console.log('  npm run dev record        - 录制点击坐标（默认比例模式）');
       console.log('  npm run dev replay <name> - 回放录制点');
       console.log('  npm run dev points        - 列出录制点');
       console.log('  npm run dev test-points   - 测试所有录制点');
+      console.log('');
+      console.log('  录制模式说明:');
+      console.log('  输入名称              - 比例模式 (ratio)，相对于窗口的比例');
+      console.log('  名称@fixed           - 固定坐标模式，屏幕绝对坐标');
+      console.log('  名称@offset          - 窗口偏移模式，相对于窗口的像素偏移');
   }
 }
 
