@@ -1,6 +1,9 @@
 {
-  "offsetX": 318,
-  "offsetY": 144,
-  "chatW": 492,
-  "chatH": 283
+  "windowX": 1,
+  "windowY": 0,
+  "offsetX": 320,
+  "offsetY": 145,
+  "chatW": 497,
+  "chatH": 287,
+  "calibratedAt": "2026-03-28T09:18:45.984Z"
 }

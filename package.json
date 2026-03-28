@@ -13,5 +13,9 @@
     "@types/node": "^25.5.0",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5",
+    "tesseract.js": "^7.0.0"
   }
 }

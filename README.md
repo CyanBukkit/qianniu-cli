@@ -139,9 +139,53 @@ qianniu-automation/
 ## 注意事项
 
 1. **窗口位置**：确保千牛接待中心窗口在默认位置，首次使用可能需要校准坐标
-2. **OCR 依赖**：需要安装 tesseract (`brew install tesseract tesseract-chi-sim`)
+2. **OCR 依赖**：需要安装 tesseract 或使用 tesseract.js（内置）
 3. **模板匹配**：需要安装 OpenCV (`pip3 install opencv-python`)
 4. **自动回复**：默认全自动发送，建议先测试 `rule-test` 确认规则正确
+
+## OCR 语言包安装（重要！）
+
+如果 OCR 识别中文失败，需要手动下载中文语言包：
+
+### 方式一：使用 tesseract.js（推荐，内置）
+
+```bash
+# 创建语言包目录
+mkdir -p ~/tessdata
+
+# 下载中文简体语言包（约44MB）
+curl -L -o ~/tessdata/chi_sim.traineddata \
+  https://github.com/tesseract-ocr/tessdata/raw/main/chi_sim.traineddata
+
+# 下载英文语言包（约4MB）
+curl -L -o ~/tessdata/eng.traineddata \
+  https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata
+
+# 压缩为 .gz 格式（tesseract.js 需要）
+gzip -k ~/tessdata/chi_sim.traineddata
+gzip -k ~/tessdata/eng.traineddata
+
+# 验证
+ls -la ~/tessdata/
+```
+
+### 方式二：使用命令行 tesseract
+
+```bash
+# 安装 tesseract
+brew install tesseract tesseract-chi-sim
+
+# 验证安装
+tesseract --version
+tesseract --list-langs  # 应该看到 chi_sim 和 eng
+```
+
+### 验证 OCR 是否正常工作
+
+```bash
+# 测试 OCR 识别
+npm run dev ocr-test
+```
 
 ## 扩展
 

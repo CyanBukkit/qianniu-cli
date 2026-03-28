@@ -20,7 +20,8 @@ export interface ReplyRule {
 
 export interface EngineConfig {
   rules: ReplyRule[];
-  defaultReply: string;   // 未匹配时的默认回复
+  defaultReply: string;   // 未匹配时的默认回复（如果是 RANDOM 则从 defaultRandomReplies 随机选择）
+  defaultRandomReplies?: string[]; // 默认随机回复列表
   enableLog: boolean;    // 是否打印日志
   cooldownSeconds: number; // 同一买家重复回复的冷却时间
 }
@@ -250,9 +251,18 @@ export function generateReply(buyerId: string, message: string): string | null {
       }
     }
   } else {
-    reply = config.defaultReply;
-    if (config.enableLog) {
-      console.log(`📝 使用默认回复`);
+    // 默认回复支持 RANDOM
+    if (config.defaultReply === 'RANDOM' && config.defaultRandomReplies) {
+      const idx = Math.floor(Math.random() * config.defaultRandomReplies.length);
+      reply = config.defaultRandomReplies[idx];
+      if (config.enableLog) {
+        console.log(`🎲 随机默认回复 -> "${reply.substring(0, 20)}..."`);
+      }
+    } else {
+      reply = config.defaultReply;
+      if (config.enableLog) {
+        console.log(`📝 使用默认回复`);
+      }
     }
   }
 
@@ -267,7 +277,21 @@ export function generateReply(buyerId: string, message: string): string | null {
  */
 export function forceReply(message: string): string {
   const match = matchRule(message);
-  return match ? match.rule.reply : config.defaultReply;
+  if (!match) {
+    // 默认回复支持 RANDOM
+    if (config.defaultReply === 'RANDOM' && config.defaultRandomReplies) {
+      const idx = Math.floor(Math.random() * config.defaultRandomReplies.length);
+      return config.defaultRandomReplies[idx];
+    }
+    return config.defaultReply;
+  }
+  
+  // 规则回复支持 RANDOM
+  if (match.rule.reply === 'RANDOM' && match.rule.randomReplies) {
+    const idx = Math.floor(Math.random() * match.rule.randomReplies.length);
+    return match.rule.randomReplies[idx];
+  }
+  return match.rule.reply;
 }
 
 /**

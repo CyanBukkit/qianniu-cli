@@ -1,11 +1,14 @@
 /**
- * OCR 模块 - 使用 macOS Vision 框架
- * 通过 screencapture + Vision OCR 读取千牛聊天文字
+ * OCR 模块 - 使用 Sharp 图像预处理 + Tesseract 命令行
+ * 参考教程：https://juejin.cn/post/7506714637040222227
+ * 优化：灰度化 + 对比度增强
  */
 
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import sharp from 'sharp';
+import Tesseract from 'tesseract.js';
 
 const TMP_IMG = '/tmp/qianniu-ocr-temp.png';
 const TMP_TXT = '/tmp/qianniu-ocr-temp.txt';
@@ -69,96 +72,125 @@ export function screenshotChat(): string {
   return TMP_IMG;
 }
 
-// ============ Vision OCR =====================
+// ============ 图像预处理 =====================
 
 /**
- * 用 macOS Vision 框架做 OCR
- * 尝试多种方式
+ * 预处理图像以改善OCR效果（参考教程优化）
+ * 1. 放大2倍 - 提高文字清晰度
+ * 2. 灰度化 - 减少颜色干扰
+ * 3. 对比度增强 - 使文字更清晰
+ * 4. 二值化 - 滤除噪声，使背景更干净
  */
-function recognizeWithVision(imagePath: string): string {
-  // 方式1: 尝试用 screencapture 直接 OCR（macOS Monterey+）
-  // 方式2: 尝试用 Python 调用系统 OCR
-  // 方式3: 使用预处理 + tesseract
-  
-  // 先尝试用图像预处理改善 tesseract 效果
-  const os = require('os');
-  const tmpDir = `${os.homedir()}/tmp`;
-  const processedPath = `${tmpDir}/${Date.now()}-processed.png`;
-  
+async function preprocessImage(inputPath: string): Promise<Buffer> {
   try {
-    // 预处理: 增强对比度
-    execSync(`sips -g all "${imagePath}" 2>/dev/null`, { timeout: 5000 });
+    // 使用 sharp 进行预处理
+    const buffer = await sharp(inputPath)
+      .resize({ kernel: sharp.kernel.lanczos3 })  // 使用高质量缩放
+      .grayscale()                                // 灰度化
+      .normalise()                                // 对比度增强
+      // 不使用二值化，保持平滑以便tesseract更好地识别
+      .toBuffer();
     
-    // 直接复制原图
-    fs.copyFileSync(imagePath, processedPath);
-  } catch {
-    // 预处理失败，使用原图
-    return 'VISION_ERROR: Preprocessing failed';
+    return buffer;
+  } catch (e) {
+    console.error('图像预处理失败:', e);
+    // 预处理失败，返回原图
+    return fs.readFileSync(inputPath);
   }
-  
-  // 使用 tesseract 多个参数尝试
-  const params = [
-    '--psm 6 -l chi_sim+eng',           // 自动分割
-    '--psm 3 -l chi_sim+eng',           // 整页识别  
-    '--psm 4 -l chi_sim+eng',           // 单列
-    '--psm 11 -l chi_sim+eng',          // 稀疏文字
-  ];
-  
-  for (const param of params) {
-    try {
-      const outputBase = `${tmpDir}/tess-${Date.now()}`;
-      const cmd = `tesseract "${processedPath}" ${outputBase} ${param} 2>/dev/null && cat ${outputBase}.txt`;
-      const result = execSync(cmd, { timeout: 15000, encoding: 'utf8' }).trim();
-      try { fs.unlinkSync(`${outputBase}.txt`); } catch {}
-      
-      if (result && result.length > 5) {
-        try { fs.unlinkSync(processedPath); } catch {}
-        return result;
-      }
-    } catch {}
-  }
-  
-  try { fs.unlinkSync(processedPath); } catch {}
-  return 'VISION_ERROR: All methods failed';
 }
 
+// ============ OCR 识别 =====================
+
 /**
- * 用 tesseract 做 OCR（备用方案）
+ * 改进的 OCR 识别 - 使用Sharp预处理 + Tesseract.js
+ * 参考教程优化：灰度化 + 对比度增强
  */
 export async function recognizeText(imagePath: string): Promise<string> {
-  // 先尝试用 Vision 框架（效果更好）
-  try {
-    const visionResult = recognizeWithVision(imagePath);
-    if (!visionResult.startsWith('VISION_ERROR') && visionResult.length > 0) {
-      return visionResult;
+  const os = require('os');
+  const tmpDir = `${os.homedir()}/tmp`;
+  const tessdataDir = `${os.homedir()}/tessdata`;
+  
+  // 确保目录存在
+  try { 
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    }
+    if (!fs.existsSync(tessdataDir)) {
+      fs.mkdirSync(tessdataDir, { recursive: true });
     }
   } catch {}
   
-  // Vision 失败后用 tesseract
   try {
-    // tesseract 在 Node.js 中无法读取 /tmp 目录，使用用户home目录的tmp
-    const os = require('os');
-    const tmpDir = `${os.homedir()}/tmp`;
+    // 1. 图像预处理（关键优化！）
+    const processedBuffer = await preprocessImage(imagePath);
     
-    // 确保 tmp 目录存在
-    try { 
-      if (!fs.existsSync(tmpDir)) {
-        fs.mkdirSync(tmpDir, { recursive: true });
-      }
-    } catch {}
-    
-    // 复制图片到 tmpDir（解决 tesseract 读取 /tmp 的问题）
+    // 复制到home目录的tmp
     const tempImagePath = `${tmpDir}/${Date.now()}-ocr.png`;
-    fs.copyFileSync(imagePath, tempImagePath);
+    fs.writeFileSync(tempImagePath, processedBuffer);
     
-    const outputBase = `${tmpDir}/tess-${Date.now()}`;
-    const cmd = `tesseract ${tempImagePath} ${outputBase} -l chi_sim+eng --psm 6 2>/dev/null && cat ${outputBase}.txt`;
-    const result = execSync(cmd, { timeout: 30000, encoding: 'utf8' }).trim();
+    // 2. 使用 tesseract.js 识别（指定本地语言包路径）
+    let text = '';
+    try {
+      // 检查本地语言包是否存在
+      const langPath = tessdataDir;
+      const hasLocalLang = fs.existsSync(`${langPath}/chi_sim.traineddata`) && 
+                           fs.existsSync(`${langPath}/eng.traineddata`);
+      
+      if (hasLocalLang) {
+        console.log('📦 使用本地语言包...');
+        // 使用本地语言包 - tesseract.js v7 API
+        const worker = await Tesseract.createWorker('chi_sim+eng', 1, {
+          langPath: langPath,
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              process.stdout.write(`\r OCR进度: ${Math.round(m.progress * 100)}%`);
+            }
+          }
+        });
+        
+        const { data: { text: result } } = await worker.recognize(tempImagePath);
+        text = result;
+        
+        await worker.terminate();
+        console.log(''); // 换行
+      } else {
+        // 没有本地语言包，尝试使用命令行 tesseract
+        console.log('⚠️ 本地语言包未找到，使用命令行OCR...');
+        throw new Error('No local lang data');
+      }
+    } catch (e) {
+      console.log('Tesseract.js OCR失败:', e);
+      // 备选：尝试使用命令行 tesseract（仅英文）
+      try {
+        const outputBase = `${tmpDir}/tess-${Date.now()}`;
+        const cmd = `tesseract "${tempImagePath}" ${outputBase} -l eng --psm 6 2>&1 && cat ${outputBase}.txt`;
+        text = execSync(cmd, { timeout: 30000, encoding: 'utf8' }).trim();
+        try { fs.unlinkSync(`${outputBase}.txt`); } catch {}
+      } catch (e2) {
+        console.log('命令行OCR也失败:', e2);
+      }
+    }
+    
     // 清理临时文件
-    try { fs.unlinkSync(`${outputBase}.txt`); } catch {}
     try { fs.unlinkSync(tempImagePath); } catch {}
-    try { fs.unlinkSync(imagePath); } catch {}  // 用完删除原截图
-    return result;
+    // 清理原截图
+    try { fs.unlinkSync(imagePath); } catch {}
+    
+    // 提取识别的文本
+    if (!text) {
+      return 'OCR_ERROR: No text detected';
+    }
+    
+    // 过滤结果
+    const lines = text.split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 1);
+    
+    if (lines.length > 0) {
+      return lines.join('\n');
+    }
+    
+    return 'OCR_ERROR: No text detected';
   } catch (e: any) {
     // 出错也删
     try { fs.unlinkSync(imagePath); } catch {}

@@ -8,8 +8,17 @@
         "profession": "高级开发工程师",
         "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/02-Engineering/SeniorDeveloper/SeniorDeveloper.png",
         "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/02-Engineering/SeniorDeveloper/SeniorDeveloper_zh.md",
-        "usedAt": 1774682226098,
+        "usedAt": 1774688272065,
         "industryId": "all"
+      },
+      {
+        "expertId": "PresalesTechnicalConsultant",
+        "name": "Sage",
+        "profession": "售前技术顾问",
+        "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/05-Sales/PresalesTechnicalConsultant/PresalesTechnicalConsultant.png",
+        "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/05-Sales/PresalesTechnicalConsultant/PresalesTechnicalConsultant_zh.md",
+        "usedAt": 1774687837036,
+        "industryId": "05-Sales"
       },
       {
         "expertId": "GrowthHacker",
@@ -22,5 +31,5 @@
       }
     ]
   },
-  "lastUpdated": 1774682368496
+  "lastUpdated": 1774691577939
 }

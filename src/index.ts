@@ -221,31 +221,10 @@ function activateApp(name: string): void {
  * 千牛可能有多个窗口，需要确保打开的是接待中心
  */
 function activateReception(): void {
-  // 先激活千牛应用
+  // 直接激活千牛应用即可
+  // 千牛打开后会自动显示上次关闭时的窗口（包括接待中心）
   activateApp(ALIWORKBENCH);
-  execSync('sleep 0.3');
-  
-  // 通过 AppleScript 查找并激活接待中心窗口
-  const script = `
-    tell application "System Events"
-      tell process "${ALIWORKBENCH}"
-        set frontmost to true
-        -- 尝试找到接待中心窗口并激活
-        try
-          set receptionWin to window "t_1487330154436_074-接待中心"
-          set frontmost of receptionWin to true
-        on error
-          -- 如果没找到，尝试激活第一个包含"接待"的窗口
-          set wns to every window whose name contains "接待"
-          if (count of wns) > 0 then
-            set frontmost of item 1 of wns to true
-          end if
-        end try
-      end tell
-    end tell
-  `;
-  runScript(script);
-  execSync('sleep 0.3');
+  execSync('sleep 0.5');
 }
 
 /**
@@ -389,14 +368,24 @@ function loadCalibrateConfig(): { x: number; y: number; w: number; h: number } |
     if (fs.existsSync(configPath)) {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       
+      // 检查是否有绝对坐标配置（优先使用）
+      if (config.x !== undefined && config.y !== undefined) {
+        return {
+          x: config.x,
+          y: config.y,
+          w: config.w || 500,
+          h: config.h || 300
+        };
+      }
+      
       // 检查是否有偏移量配置
       if (config.offsetX !== undefined && config.offsetY !== undefined) {
-        // 获取当前千牛窗口位置
+        // 获取当前千牛窗口位置 - 使用索引而不是窗口名称
         const getCurrentWindowPos = (): { x: number; y: number; w: number; h: number } | null => {
-          const windowName = 't_1487330154436_074-接待中心';
           try {
-            const posScript = `tell application "System Events" to tell process "Aliworkbench" to tell window "${windowName}" to get position`;
-            const sizeScript = `tell application "System Events" to tell process "Aliworkbench" to tell window "${windowName}" to get size`;
+            // 使用窗口索引1（第一个窗口）代替窗口名称
+            const posScript = `tell application "System Events" to tell process "Aliworkbench" to get position of window 1`;
+            const sizeScript = `tell application "System Events" to tell process "Aliworkbench" to get size of window 1`;
             
             const posResult = execSync(`osascript -e '${posScript}'`, { encoding: 'utf8' }).trim();
             const sizeResult = execSync(`osascript -e '${sizeScript}'`, { encoding: 'utf8' }).trim();
@@ -542,6 +531,70 @@ function sendReply(text: string): boolean {
 let lastMessageText = '';
 let isRunning = false;
 let autoReplyEnabled = true; // 是否启用自动回复
+let lastSentReply = '';      // 上次发送的回复内容
+let lastSentTime = 0;       // 上次发送的时间
+const COOLDOWN_MS = 60000;  // 发送冷却时间（1分钟内不重复发送）
+
+// 已发送消息记录文件
+const SENT_MESSAGES_FILE = '/Users/liuyuxuanyi/Documents/qianniu-automation/data/sent-messages.json';
+
+/**
+ * 加载已发送消息记录
+ */
+function loadSentMessages(): Set<string> {
+  try {
+    if (fs.existsSync(SENT_MESSAGES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SENT_MESSAGES_FILE, 'utf8'));
+      const msgList: string[] = data.messages || [];
+      const messages = new Set<string>(msgList);
+      // 清理超过7天的记录
+      const now = Date.now();
+      const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+      const times = data.times as Record<string, number>;
+      for (const msg of messages) {
+        if (times && times[msg] && times[msg] < weekAgo) {
+          messages.delete(msg);
+        }
+      }
+      return messages;
+    }
+  } catch {}
+  return new Set<string>();
+}
+
+/**
+ * 保存已发送消息
+ */
+function saveSentMessage(message: string): void {
+  try {
+    let data = { messages: [], times: {} };
+    if (fs.existsSync(SENT_MESSAGES_FILE)) {
+      data = JSON.parse(fs.readFileSync(SENT_MESSAGES_FILE, 'utf8'));
+    }
+    if (!data.messages) data.messages = [];
+    if (!data.times) data.times = {};
+    
+    if (!data.messages.includes(message)) {
+      data.messages.push(message);
+    }
+    data.times[message] = Date.now();
+    
+    // 只保留最近100条
+    if (data.messages.length > 100) {
+      data.messages = data.messages.slice(-100);
+    }
+    
+    fs.writeFileSync(SENT_MESSAGES_FILE, JSON.stringify(data, null, 2));
+  } catch {}
+}
+
+/**
+ * 检查是否已经发送过这条消息
+ */
+function hasBeenSent(message: string): boolean {
+  const sentMessages = loadSentMessages();
+  return sentMessages.has(message);
+}
 
 /**
  * 主监听循环
@@ -571,7 +624,11 @@ async function monitorCycle(intervalMs = 5000) {
       const messages = await readMessages();
       const currentText = messages.join('\n');
 
-      if (currentText !== lastMessageText && lastMessageText !== '') {
+      // 首次启动时不发送（lastMessageText为空）
+      // 并且要确保有新消息变化才处理
+      const hasNewChanges = currentText !== lastMessageText && lastMessageText !== '';
+      
+      if (hasNewChanges) {
         const newLines = detectChanges(lastMessageText, currentText);
         if (newLines.length > 0) {
           console.log('\n🆕 检测到新消息:');
@@ -587,13 +644,28 @@ async function monitorCycle(intervalMs = 5000) {
             const reply = generateReply(buyerId, latestBuyerMsg);
             
             if (reply) {
-              console.log(`\n🤖 自动回复: ${reply}`);
-              // 自动发送
-              const ok = sendReply(reply);
-              if (ok) {
-                console.log('✅ 已自动发送');
+              // 检查是否已发送过相同回复（冷却时间内不重复）
+              const now = Date.now();
+              const isSameAsLastReply = reply === lastSentReply && (now - lastSentTime) < COOLDOWN_MS;
+              const hasSentBefore = hasBeenSent(reply);
+              
+              if (isSameAsLastReply) {
+                console.log(`\n⏳ 跳过: 同一回复在冷却时间内`);
+              } else if (hasSentBefore) {
+                console.log(`\n⏳ 跳过: 该回复之前已发送过`);
               } else {
-                console.log('❌ 自动回复失败');
+                console.log(`\n🤖 自动回复: ${reply}`);
+                // 自动发送
+                const ok = sendReply(reply);
+                if (ok) {
+                  console.log('✅ 已自动发送');
+                  // 记录发送
+                  lastSentReply = reply;
+                  lastSentTime = now;
+                  saveSentMessage(reply);
+                } else {
+                  console.log('❌ 自动回复失败');
+                }
               }
             }
           }
