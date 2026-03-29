@@ -17,11 +17,19 @@ interface WindowRect {
   h: number;
 }
 
+// 坐标点类型：ratio(比例) | fixed(固定坐标) | offset(窗口偏移)
+type PointType = 'ratio' | 'fixed' | 'offset';
+
 interface RecordedPoint {
   name: string;
-  windowName: string;
-  ratioX: number;
-  ratioY: number;
+  type?: PointType;           // 模式类型
+  windowName?: string;        // 窗口名称 (ratio/offset模式需要)
+  ratioX?: number;            // 比例坐标 (ratio模式)
+  ratioY?: number;            // 比例坐标 (ratio模式)
+  fixedX?: number;            // 固定坐标 (fixed模式)
+  fixedY?: number;            // 固定坐标 (fixed模式)
+  offsetX?: number;           // 窗口偏移 (offset模式)
+  offsetY?: number;           // 窗口偏移 (offset模式)
   recordedAt: string;
 }
 
@@ -135,12 +143,63 @@ function saveRecordings(data: RecordingData): void {
   fs.writeFileSync(RECORDINGS_FILE, JSON.stringify(data, null, 2));
 }
 
-function recordPoint(name: string): void {
-  console.log(`\n📌 录制点: ${name}`);
-  console.log(`⏳ 10 秒内切换到千牛窗口，点击目标位置...`);
-  console.log(`   (点击后自动完成录制)\n`);
+/**
+ * 录制坐标点
+ * @param name 点名称
+ * @param type 模式: 'ratio'(默认比例) | 'fixed'(固定坐标) | 'offset'(窗口偏移)
+ */
+function recordPoint(name: string, type: string = 'ratio'): void {
+  console.log(`\n📌 录制点: ${name} [${type}]`);
+  
+  // 固定坐标模式：直接获取鼠标位置，不需要窗口
+  if (type === 'fixed') {
+    console.log(`⏳ 10 秒内点击目标位置...`);
+    
+    const script = `
+from pynput import mouse
+import time
 
-  // 用 pynput 监听鼠标点击
+result = ["TIMEOUT"]
+start = time.time()
+
+def on_click(x, y, button, pressed):
+    if pressed:
+        result[0] = f"{x},{y}"
+        return False
+
+with mouse.Listener(on_click=on_click) as listener:
+    while listener.running and time.time() - start < 10:
+        time.sleep(0.1)
+
+print(result[0])
+`;
+    try {
+      const posResult = execSync(`python3 -c '${script.replace(/'/g, "'\\''")}'`, { timeout: 15000, encoding: 'utf8' }).trim();
+      const [fixedX, fixedY] = posResult.split(',').map(Number);
+      console.log(`🖱️  固定坐标: (${fixedX}, ${fixedY})`);
+      
+      const data = loadRecordings();
+      const existing = data.points.find(p => p.name === name);
+      if (existing) {
+        existing.type = 'fixed';
+        existing.fixedX = fixedX;
+        existing.fixedY = fixedY;
+        existing.recordedAt = new Date().toISOString();
+        console.log(`✅ 已更新: ${name}`);
+      } else {
+        data.points.push({ name, type: 'fixed', fixedX, fixedY, recordedAt: new Date().toISOString() });
+        console.log(`✅ 已保存: ${name}`);
+      }
+      saveRecordings(data);
+    } catch (e: any) {
+      console.error('❌ 录制失败:', e.message);
+    }
+    return;
+  }
+  
+  // 比例模式或偏移模式：需要窗口
+  console.log(`⏳ 10 秒内切换到千牛窗口，点击目标位置...`);
+
   const script = `
 from pynput import mouse
 import time
@@ -193,20 +252,40 @@ print(result[0])
     const windowName = targetWindow.name;
     console.log(`📐 窗口: ${windowName} (${windowRect.x}, ${windowRect.y}) ${windowRect.w}x${windowRect.h}`);
 
-    const { ratioX, ratioY } = calculateRatio(screenX, screenY, windowRect);
-    console.log(`📊 比例: (${ratioX.toFixed(4)}, ${ratioY.toFixed(4)})`);
-
     const data = loadRecordings();
     const existing = data.points.find(p => p.name === name);
-    if (existing) {
-      existing.ratioX = ratioX;
-      existing.ratioY = ratioY;
-      existing.recordedAt = new Date().toISOString();
-      existing.windowName = windowName;
-      console.log(`✅ 已更新: ${name}`);
-    } else {
-      data.points.push({ name, windowName, ratioX, ratioY, recordedAt: new Date().toISOString() });
-      console.log(`✅ 已保存: ${name}`);
+    
+    if (type === 'ratio') {
+      const { ratioX, ratioY } = calculateRatio(screenX, screenY, windowRect);
+      console.log(`📊 比例: (${ratioX.toFixed(4)}, ${ratioY.toFixed(4)})`);
+      
+      if (existing) {
+        existing.type = 'ratio';
+        existing.ratioX = ratioX;
+        existing.ratioY = ratioY;
+        existing.windowName = windowName;
+        existing.recordedAt = new Date().toISOString();
+        console.log(`✅ 已更新: ${name}`);
+      } else {
+        data.points.push({ name, type: 'ratio', windowName, ratioX, ratioY, recordedAt: new Date().toISOString() });
+        console.log(`✅ 已保存: ${name}`);
+      }
+    } else if (type === 'offset') {
+      const offsetX = screenX - windowRect.x;
+      const offsetY = screenY - windowRect.y;
+      console.log(`📊 偏移: (${offsetX}, ${offsetY})`);
+      
+      if (existing) {
+        existing.type = 'offset';
+        existing.offsetX = offsetX;
+        existing.offsetY = offsetY;
+        existing.windowName = windowName;
+        existing.recordedAt = new Date().toISOString();
+        console.log(`✅ 已更新: ${name}`);
+      } else {
+        data.points.push({ name, type: 'offset', windowName, offsetX, offsetY, recordedAt: new Date().toISOString() });
+        console.log(`✅ 已保存: ${name}`);
+      }
     }
 
     data.windowName = windowName;
@@ -223,20 +302,39 @@ print(result[0])
 
 function interactiveRecord(): void {
   console.log('\n=== 录制模式 ===');
-  console.log('输入点名称，切换到千牛窗口点击，输入 q 退出\n');
+  console.log('输入点名称（可带模式后缀），切换到千牛窗口点击，输入 q 退出\n');
+  console.log('模式说明:');
+  console.log('  直接输入名称     - 比例模式 (ratio)');
+  console.log('  名称@fixed      - 固定坐标模式');
+  console.log('  名称@offset     - 窗口偏移量模式\n');
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   const ask = () => {
-    rl.question('点名称 (或 q): ', (name) => {
-      if (name.toLowerCase() === 'q') {
+    rl.question('点名称 (名称@模式 或 q): ', (input) => {
+      if (input.toLowerCase() === 'q') {
         console.log('\n✅ 录制结束');
         listPoints();
         rl.close();
         return;
       }
-      if (!name.trim()) { ask(); return; }
-      recordPoint(name.trim());
+      if (!input.trim()) { ask(); return; }
+      
+      // 解析名称和模式
+      let name = input.trim();
+      let type = 'ratio';
+      if (name.includes('@')) {
+        const parts = name.split('@');
+        name = parts[0].trim();
+        type = parts[1].trim().toLowerCase();
+        if (!['ratio', 'fixed', 'offset'].includes(type)) {
+          console.log(`⚠️ 未知模式: ${type}，使用默认 ratio`);
+          type = 'ratio';
+        }
+      }
+      
+      if (!name) { ask(); return; }
+      recordPoint(name, type);
       ask();
     });
   };
@@ -253,14 +351,43 @@ function replayPoint(name: string): boolean {
     return false;
   }
 
-  const windowRect = getWindowRect(point.windowName);
-  if (!windowRect) {
-    console.error(`❌ 找不到窗口: ${point.windowName}`);
+  const pointType = point.type || 'ratio';
+  let x: number, y: number;
+
+  // ========== 模式1: 固定坐标 (fixed) ==========
+  if (pointType === 'fixed' || ('fixedX' in point && 'fixedY' in point)) {
+    x = point.fixedX as number;
+    y = point.fixedY as number;
+    console.log(`📍 ${name} [fixed]: 点击固定坐标 (${x}, ${y})`);
+  }
+  // ========== 模式2: 比例坐标 (ratio) ==========
+  else if (pointType === 'ratio' || point.ratioX !== undefined) {
+    const windowRect = getWindowRect(point.windowName);
+    if (!windowRect) {
+      console.error(`❌ 找不到窗口: ${point.windowName}`);
+      return false;
+    }
+    const pos = calculateScreenPos(point.ratioX, point.ratioY, windowRect);
+    x = pos.x;
+    y = pos.y;
+    console.log(`📍 ${name} [ratio]: 点击 (${x}, ${y})`);
+  }
+  // ========== 模式3: 窗口偏移量 (offset) ==========
+  else if (pointType === 'offset') {
+    const windowRect = getWindowRect(point.windowName);
+    if (!windowRect) {
+      console.error(`❌ 找不到窗口: ${point.windowName}`);
+      return false;
+    }
+    x = windowRect.x + point.offsetX;
+    y = windowRect.y + point.offsetY;
+    console.log(`📍 ${name} [offset]: 点击 (${x}, ${y})`);
+  }
+  else {
+    console.error(`❌ 未知模式: ${pointType}`);
     return false;
   }
 
-  const { x, y } = calculateScreenPos(point.ratioX, point.ratioY, windowRect);
-  console.log(`📍 ${name}: 点击 (${x}, ${y})`);
   clickAt(x, y);
   return true;
 }
@@ -270,8 +397,18 @@ function listPoints(): void {
   console.log(`\n窗口: ${data.windowName}`);
   console.log(`尺寸: ${data.windowRect.w}x${data.windowRect.h}`);
   console.log(`\n已录制 (${data.points.length} 个):`);
+  console.log('模式说明: ratio=比例坐标 | fixed=固定坐标 | offset=窗口偏移\n');
   data.points.forEach((p, i) => {
-    console.log(`  ${i + 1}. ${p.name} → (${p.ratioX.toFixed(4)}, ${p.ratioY.toFixed(4)})`);
+    const type = p.type || 'ratio';
+    if (type === 'fixed') {
+      console.log(`  ${i + 1}. ${p.name} [fixed] → 坐标 (${p.fixedX}, ${p.fixedY})`);
+    } else if (type === 'offset') {
+      console.log(`  ${i + 1}. ${p.name} [offset] → 偏移 ${p.windowName} (${p.offsetX}, ${p.offsetY})`);
+    } else if (type === 'ratio') {
+      console.log(`  ${i + 1}. ${p.name} [ratio] → ${p.windowName} (${p.ratioX?.toFixed(4)}, ${p.ratioY?.toFixed(4)})`);
+    } else {
+      console.log(`  ${i + 1}. ${p.name} → (类型未知: ${type})`);
+    }
   });
 }
 

@@ -255,32 +255,40 @@ function loadRecordedPoint(pointName: string): { x: number; y: number } | null {
         return null;
       }
       
+      // 遍历所有窗口，找到名称匹配的（避免直接用中文名称转义问题）
       const windowScript = `
         tell application "System Events"
           tell process "${ALIWORKBENCH}"
-            try
-              tell window "${point.windowName}"
-                set p to position
-                set s to size
-                return (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s)
-              end tell
-            on error
-              return "NOT_FOUND"
-            end try
+            set out to ""
+            repeat with i from 1 to count of windows
+              set wName to name of window i
+              set p to position of window i
+              set s to size of window i
+              set out to out & wName & "|" & (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s) & ";"
+            end repeat
+            return out
           end tell
         end tell
       `;
       
       const result = runScript(windowScript);
-      if (result === 'NOT_FOUND' || !result) {
+      if (!result) return null;
+      
+      // 解析所有窗口，找到名称匹配的
+      const windows = result.split(';').filter(Boolean).map(seg => {
+        const [name, coords] = seg.split('|');
+        const parts = coords.split(',').map(s => parseInt(s.trim(), 10));
+        return { name: name || '', x: parts[0] || 0, y: parts[1] || 0, w: parts[2] || 0, h: parts[3] || 0 };
+      });
+      
+      // 精确匹配 windowName
+      const targetWindow = windows.find(w => w.name === point.windowName);
+      if (!targetWindow) {
         console.log(`⚠️ 找不到窗口: ${point.windowName}`);
         return null;
       }
       
-      const parts = result.split(',').filter((s: string) => s.trim()).map((s: string) => parseInt(s.trim(), 10));
-      if (parts.length < 4) return null;
-      
-      const [wx, wy, ww, wh] = parts;
+      const { x: wx, y: wy, w: ww, h: wh } = targetWindow;
       const x = Math.round(wx + (point.ratioX || 0) * ww);
       const y = Math.round(wy + (point.ratioY || 0) * wh);
       
@@ -331,12 +339,27 @@ function loadRecordedPoint(pointName: string): { x: number; y: number } | null {
 }
 
 function sendTextViaClipboard(text: string): void {
+  console.log(`  📋 准备发送: "${text.substring(0, 30)}..."`);
+  
   // 先复制到剪贴板
-  execSync(`echo '${text.replace(/'/g, "\\'")}' | pbcopy`);
+  const escapedText = text.replace(/"/g, '\\"').replace(/'/g, "\\'");
+  execSync(`printf '%s' "${escapedText}" | pbcopy`, { encoding: 'utf8' });
+  execSync('sleep 0.1');
+  
+  // 验证剪贴板内容
+  const clipboardContent = execSync('pbpaste', { encoding: 'utf8' }).trim();
+  console.log(`  📋 剪贴板内容: "${clipboardContent.substring(0, 20)}..."`);
+  
+  // 点击输入框确保焦点
+  execSync('sleep 0.1');
+  
   // Command+V 粘贴
   runScript(`tell application "System Events" to keystroke "v" using command down`);
+  execSync('sleep 0.2');
+  
   // 回车发送
   runScript(`tell application "System Events" to keystroke return`);
+  console.log('  📤 已回车发送');
 }
 
 // ============ 窗口管理 =================
@@ -525,48 +548,39 @@ async function readMessages(): Promise<string[]> {
 
 /**
  * 发送回复
- * 完整流程：
- * 1. 激活接待中心窗口
- * 2. 点击"新的客户咨询"（如果有弹窗）
- * 3. 点击聊天区域
- * 4. 复制到剪贴板 → 粘贴 → 发送
+ * 完整流程（假设已经在聊天界面）：
+ * 1. 点击聊天区域（消息输入框位置）
+ * 2. 复制到剪贴板 → 粘贴 → 发送
  */
 function sendReply(text: string): boolean {
   try {
     console.log('📤 开始发送回复...');
     
-    // 1. 点击"新的客户咨询"通知，让千牛自动跳转到对应聊天
-    console.log('  → 点击"新的客户咨询"通知');
-    const newConsultPoint = loadRecordedPoint('新的客户咨询');
-    if (newConsultPoint) {
-      clickAt(newConsultPoint.x, newConsultPoint.y);
-      execSync('sleep 1');
-    } else {
-      console.log('  ⚠️ 未找到"新的客户咨询"坐标');
-    }
+    // 注意：monitorCycle 已经点击过"新的客户咨询"并等待跳转
+    // 这里不再重复点击，直接点击聊天区域
     
-    // 3. 点击聊天区域（消息输入框位置）
+    // 1. 点击聊天区域（消息输入框位置）
     console.log('  → 点击聊天区域');
     const chatAreaPoint = loadRecordedPoint('聊天区域');
     if (chatAreaPoint) {
       console.log(`  → 点击聊天输入框: (${chatAreaPoint.x}, ${chatAreaPoint.y})`);
       clickAt(chatAreaPoint.x, chatAreaPoint.y);
-      execSync('sleep 0.3');
+      execSync('sleep 0.5');  // 增加等待时间，确保输入框获得焦点
     } else {
-      console.log('  ⚠️ 未找到"聊天区域"坐标，尝试使用标定配置');
+      console.log('  ⚠️ 未找到"聊天记录"坐标，尝试使用标定配置');
       // 备选：使用 calibrate.json 中的坐标
       const calibrate = loadCalibrateConfig();
       if (calibrate) {
-        // 点击聊天区域中间位置
+        // 点击聊天记录区域中间位置
         const inputX = calibrate.x + calibrate.w / 2;
         const inputY = calibrate.y + calibrate.h - 30;
         console.log(`  → 使用备选坐标: (${inputX}, ${inputY})`);
         clickAt(inputX, inputY);
-        execSync('sleep 0.3');
+        execSync('sleep 0.5');
       }
     }
     
-    // 4. 复制到剪贴板 → 粘贴 → 发送
+    // 2. 复制到剪贴板 → 粘贴 → 发送
     console.log('  → 粘贴并发送');
     sendTextViaClipboard(text);
     
@@ -666,75 +680,62 @@ async function monitorCycle(intervalMs = 5000) {
       const newConsultPoint = loadRecordedPoint('新的客户咨询');
       if (newConsultPoint) {
         clickAt(newConsultPoint.x, newConsultPoint.y);
-        execSync('sleep 0.5');
-        console.log('📋 已点击"新的客户咨询"通知');
-      }
-      
-      // 2. 检测并关闭其他弹窗
-      const hadPopup = await closePopups();
-      if (hadPopup) {
-        console.log('🔔 已关闭弹窗');
-        execSync('sleep 0.3');
-      }
-      
-      // 3. 读取消息
-      const messages = await readMessages();
-      const currentText = messages.join('\n');
-
-      // 有消息内容才处理（首次启动或后续更新）
-      // 检测到新买家消息时触发自动回复
-      const hasNewContent = currentText.length > 0 && currentText !== lastMessageText;
-      
-      if (hasNewContent) {
-        const newLines = detectChanges(lastMessageText, currentText);
-        if (newLines.length > 0) {
-          console.log('\n🆕 检测到新消息:');
-          newLines.forEach(l => console.log(`  > ${l}`));
+        execSync('sleep 1.5');  // 等待千牛跳转到聊天界面
+        console.log('📋 已点击"新的客户咨询"通知，等待跳转...');
+        
+        // 2. 检测并关闭其他弹窗
+        const hadPopup = await closePopups();
+        if (hadPopup) {
+          console.log('🔔 已关闭弹窗');
+          execSync('sleep 0.3');
+        }
+        
+        // 3. 直接发随机消息（不等待OCR）
+        if (autoReplyEnabled) {
+          console.log('📤 检测到新咨询，直接发送随机回复...');
           
-          // 尝试识别买家ID（从消息中提取）
-          const buyerId = 'current-buyer'; // 简化处理
-          
-          // 自动回复
-          if (autoReplyEnabled) {
-            // 取最新一条买家消息
-            const latestBuyerMsg = newLines[newLines.length - 1];
-            const reply = generateReply(buyerId, latestBuyerMsg);
+          // 随机选一条回复
+          const config = loadConfig();
+          const enabledRules = config.rules.filter(r => r.enabled);
+          if (enabledRules.length > 0) {
+            const randomRule = enabledRules[Math.floor(Math.random() * enabledRules.length)];
+            let reply = randomRule.reply;
             
-            if (reply) {
-              // 检查是否已发送过相同回复（冷却时间内不重复）
-              const now = Date.now();
-              const isSameAsLastReply = reply === lastSentReply && (now - lastSentTime) < COOLDOWN_MS;
-              const hasSentBefore = hasBeenSent(reply);
-              
-              if (isSameAsLastReply) {
-                console.log(`\n⏳ 跳过: 同一回复在冷却时间内`);
-              } else if (hasSentBefore) {
-                console.log(`\n⏳ 跳过: 该回复之前已发送过`);
-              } else {
-                console.log(`\n🤖 自动回复: ${reply}`);
-                // 自动发送
-                const ok = sendReply(reply);
-                if (ok) {
-                  console.log('✅ 已自动发送');
-                  // 记录发送
-                  lastSentReply = reply;
-                  lastSentTime = now;
-                  saveSentMessage(reply);
-                } else {
-                  console.log('❌ 自动回复失败');
-                }
-              }
+            // 如果是随机回复模式
+            if (reply === 'RANDOM' && randomRule.randomReplies && randomRule.randomReplies.length > 0) {
+              reply = randomRule.randomReplies[Math.floor(Math.random() * randomRule.randomReplies.length)];
+            }
+            
+            console.log(`🤖 自动回复: ${reply}`);
+            const ok = sendReply(reply);
+            if (ok) {
+              console.log('✅ 已自动发送');
+            } else {
+              console.log('❌ 自动发送失败');
             }
           }
-          
-          console.log('\n💬 当前全部消息:');
-          messages.slice(-6).forEach(m => console.log(`  ${m}`));
         }
+        
+        // 4. 发送后做OCR（TODO：后续可以分析买家消息做智能回复）
+        console.log('🔍 做OCR记录买家消息...');
+        try {
+          const messages = await readMessages();
+          if (messages.length > 0) {
+            console.log(`  📋 读取到 ${messages.length} 条消息`);
+          }
+        } catch (e) {
+          console.log('  ⚠️ 读取失败:', e);
+        }
+        
+        // 5. 进入下一轮轮询
+        console.log('⏭️ 进入下一轮轮询...');
+        lastMessageText = '';  // 重置消息状态
+      } else {
+        // 没有新的客户咨询，跳过
+        console.log('📋 无新咨询消息，跳过...');
       }
-
-      lastMessageText = currentText;
     } catch (e) {
-      console.error('读取失败:', e);
+      console.error('处理失败:', e);
     }
 
     await new Promise(r => setTimeout(r, intervalMs));

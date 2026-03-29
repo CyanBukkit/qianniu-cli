@@ -39,3 +39,7 @@
 3. **OCR优化** - 改用 tesseract.js + 本地语言包，支持中文识别
 4. **y轴偏移** - calibrate.json 中 offsetY 从 169 改为 145（减少24）
 5. **弹窗检测** - 新增detectPopup() OCR检测函数，只有检测到弹窗时才点击关闭按钮
+6. **点击后不自动回复** - 修复 monitorCycle 点击"新的客户咨询"后不继续自动回复：
+   - monitorCycle 点击通知后等待时间从 0.5s 增加到 1.5s
+   - sendReply 移除重复点击"新的客户咨询"的逻辑（monitorCycle已处理）
+   - 添加"无匹配规则"的提示日志

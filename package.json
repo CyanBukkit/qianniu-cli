@@ -3,19 +3,27 @@
   "version": "0.1.0",
   "description": "千牛自动化 - 读取消息、监听新消息、自动回复",
   "main": "dist/index.js",
+  "bin": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "dev": "ts-node src/index.ts",
-    "watch": "ts-node-dev --respawn src/index.ts"
+    "watch": "ts-node-dev --respawn src/index.ts",
+    "binary": "tsc && pkg . --output qianniu-macos"
   },
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^25.5.0",
+    "pkg": "^5.8.1",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.2"
   },
   "dependencies": {
-    "sharp": "^0.34.5",
-    "tesseract.js": "^7.0.0"
+  },
+  "pkg": {
+    "assets": [
+      "data/**/*",
+      "node_modules/sharp/**/*",
+      "node_modules/tesseract.js/**/*"
+    ]
   }
 }

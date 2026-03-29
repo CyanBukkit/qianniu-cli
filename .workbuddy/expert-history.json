@@ -29,7 +29,27 @@
         "usedAt": 1774678786761,
         "industryId": "11-ProfessionalServices"
       }
+    ],
+    "fb057ea84df14c9f946ee423234a0716": [
+      {
+        "expertId": "SeniorDeveloper",
+        "name": "Will",
+        "profession": "高级开发工程师",
+        "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/02-Engineering/SeniorDeveloper/SeniorDeveloper.png",
+        "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/02-Engineering/SeniorDeveloper/SeniorDeveloper_zh.md",
+        "usedAt": 1774698748991,
+        "industryId": "all"
+      },
+      {
+        "expertId": "ChinaEcommerceOperationsExpert",
+        "name": "Jude",
+        "profession": "中国电商运营专家",
+        "avatarUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/avatars/03-Marketing/ChinaEcommerceOperationsExpert/ChinaEcommerceOperationsExpert.png",
+        "promptUrl": "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/experts/experts/03-Marketing/ChinaEcommerceOperationsExpert/ChinaEcommerceOperationsExpert_zh.md",
+        "usedAt": 1774697572387,
+        "industryId": "all"
+      }
     ]
   },
-  "lastUpdated": 1774691577939
+  "lastUpdated": 1774765373504
 }
