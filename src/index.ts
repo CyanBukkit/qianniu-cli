@@ -12,65 +12,342 @@ import Tesseract from 'tesseract.js';
 
 // ============ 弹窗检测与关闭 =================
 
-// 弹窗检测区域（右上角，消息提醒通常在这里）
-const POPUP_REGION = { x: 1400, y: 0, w: 200, h: 150 };
+/**
+ * 获取千牛所有窗口名称列表
+ */
+function getQianniuWindowNames(): string[] {
+  try {
+    const script = `
+      tell application "System Events"
+        tell process "Aliworkbench"
+          set winNames to ""
+          repeat with i from 1 to count of windows
+            try
+              set wName to name of window i
+              set winNames to winNames & wName & "|||"
+            end try
+          end repeat
+          return winNames
+        end tell
+      end tell
+    `;
+    const result = runScript(script).trim();
+    if (!result) return [];
+    return result.split('|||').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
 /**
- * 检测是否有弹窗需要关闭
- * 通过 OCR 检测右上角区域是否包含弹窗关键词
+ * 关闭包含指定关键词的窗口
+ * 通过窗口索引 + Cmd+W 快捷键强制关闭
+ * @param keywords 要匹配的关键词数组
+ * @param processName 进程名
+ * @returns 关闭的窗口数量
  */
-async function detectPopup(): Promise<boolean> {
-  // 截取右上角区域
-  const popupImg = '/tmp/qianniu-popup-detect.png';
-  try {
-    execSync(`screencapture -x -R ${POPUP_REGION.x},${POPUP_REGION.y},${POPUP_REGION.w},${POPUP_REGION.h} ${popupImg}`, { timeout: 5000 });
-  } catch {
-    return false;
-  }
+function closeWindowsContainingKeywords(keywords: string[], processName = 'Aliworkbench'): number {
+  let closedCount = 0;
   
-  // OCR 识别
   try {
-    const { data: { text } } = await Tesseract.recognize(popupImg, 'chi_sim+eng', {
-      logger: () => {}
+    // 获取窗口名称和索引的映射
+    const script = `
+      tell application "System Events"
+        tell process "${processName}"
+          set winInfo to ""
+          repeat with i from 1 to count of windows
+            try
+              set wName to name of window i
+              set winInfo to winInfo & i & "|||" & wName & ";;;;"
+            end try
+          end repeat
+          return winInfo
+        end tell
+      end tell
+    `;
+    const result = runScript(script).trim();
+    if (!result) return 0;
+    
+    // 解析窗口列表
+    const windowList = result.split(';;;;').filter(Boolean).map(seg => {
+      const [idx, ...nameParts] = seg.split('|||');
+      return {
+        index: parseInt(idx.trim(), 10),
+        name: nameParts.join('|||').trim()
+      };
     });
     
-    const textLower = text.toLowerCase();
-    // 检测弹窗关键词
-    const popupKeywords = ['消息提醒', '系统消息', '通知', '温馨提示'];
-    const hasPopup = popupKeywords.some(kw => text.includes(kw));
-    
-    if (hasPopup) {
-      console.log(`🔍 检测到弹窗: ${text.substring(0, 50)}...`);
+    // 找到匹配的窗口
+    for (const win of windowList) {
+      const matchedKeyword = keywords.find(kw => win.name.includes(kw));
+      if (matchedKeyword) {
+        console.log(`🔍 找到弹窗: "${win.name}" (索引:${win.index})，尝试关闭...`);
+        
+        // 先激活窗口，再用 Cmd+W 关闭
+        const closeScript = `
+          tell application "System Events"
+            tell process "${processName}"
+              try
+                -- 先激活窗口
+                set frontmost to true
+                delay 0.1
+                -- 用 Cmd+W 关闭指定索引的窗口
+                set focused of window ${win.index} to true
+                keystroke "w" using command down
+                return "CLOSED"
+              on error errMsg
+                return "ERROR: " & errMsg
+              end try
+            end tell
+          end tell
+        `;
+        
+        try {
+          const closeResult = runScript(closeScript).trim();
+          if (closeResult === 'CLOSED') {
+            console.log(`✅ 已关闭窗口: "${win.name}"`);
+            closedCount++;
+            execSync('sleep 0.2');  // 等待窗口关闭
+          } else {
+            console.log(`⚠️ 关闭结果: ${closeResult}`);
+          }
+        } catch (e) {
+          console.log(`❌ 关闭失败: ${e}`);
+        }
+      }
     }
-    return hasPopup;
-  } catch {
+  } catch (e) {
+    console.log(`❌ 获取窗口列表失败: ${e}`);
+  }
+  
+  return closedCount;
+}
+
+/**
+ * 尝试通过按键关闭弹窗（Escape 或 Enter）
+ * 直接用 AppleScript 聚焦到询问窗口并发送按键
+ */
+function closePopupByKey(): boolean {
+  try {
+    // 1. 打印当前所有窗口，确认"询问"窗口存在
+    const listScript = `
+      tell application "System Events"
+        tell process "Aliworkbench"
+          set winInfo to ""
+          repeat with i from 1 to count of windows
+            try
+              set wName to name of window i
+              set winInfo to winInfo & "[" & i & "] " & wName & ";"
+            end try
+          end repeat
+          return winInfo
+        end tell
+      end tell
+    `;
+    const windowList = runScript(listScript).trim();
+    console.log(`📋 当前窗口: ${windowList || '(无)'}`);
+    
+    // 2. 直接用窗口名称聚焦并按键
+    const script = `
+      tell application "System Events"
+        tell process "Aliworkbench"
+          -- 遍历窗口找到包含"询问"的
+          repeat with i from 1 to count of windows
+            try
+              set wName to name of window i
+              if wName contains "询问" then
+                -- 设置该窗口为焦点窗口
+                set frontmost of process "Aliworkbench" to true
+                delay 0.1
+                -- 直接对这个窗口按 Escape
+                perform action "AXRaise" of window i
+                delay 0.1
+                key code 53 -- Escape
+                return "OK"
+              end if
+            end try
+          end repeat
+          return "NOT_FOUND"
+        end tell
+      end tell
+    `;
+    
+    const result = runScript(script).trim();
+    console.log(`🔑 按键结果: ${result}`);
+    
+    execSync('sleep 0.3');
+    return result === 'OK';
+  } catch (e) {
+    console.log(`❌ 按键关闭失败: ${e}`);
     return false;
   }
 }
 
 /**
- * 检测并关闭千牛弹窗
- * 返回是否检测到弹窗
+ * 点击关闭按钮关闭弹窗
+ * 使用录制的坐标点
  */
-async function closePopups(): Promise<boolean> {
-  // 先检测是否有弹窗
-  const hasPopup = await detectPopup();
-  if (!hasPopup) {
-    return false;
-  }
-  
-  // 有弹窗，点击关闭消息提醒按钮（固定坐标）
+function closePopupByClick(): boolean {
+  // 尝试使用录制的关闭按钮坐标
   const closeBtnPoint = loadRecordedPoint('关闭这个消息提醒');
   if (closeBtnPoint) {
     try {
-      // 点击关闭按钮
-      execSync(`cliclick c:${closeBtnPoint.x},${closeBtnPoint.y}`);
+      // 坐标取整，避免浮点错误
+      const x = Math.round(closeBtnPoint.x);
+      const y = Math.round(closeBtnPoint.y);
+      execSync(`cliclick c:${x},${y}`);
       execSync('sleep 0.2');
       return true;
     } catch {
       return false;
     }
   }
+  return false;
+}
+
+/**
+ * 检测并关闭千牛弹窗
+ * 通过获取窗口列表匹配关键词来检测弹窗
+ * 如果"询问"窗口存在，会暂停并提示用户手动处理
+ * @returns 是否检测并关闭了弹窗
+ */
+async function closePopups(): Promise<boolean> {
+  // 弹窗关键词列表
+  const popupKeywords = ['消息通知', '询问'];
+  
+  // 先获取当前窗口列表
+  const windows = getQianniuWindowNames();
+  
+  // 检查是否有"询问"窗口
+  const hasAskWindow = windows.some(w => w.includes('询问'));
+  if (hasAskWindow) {
+    console.log('═══════════════════════════════════════');
+    console.log('⚠️  检测到"询问"窗口，开始自动关闭尝试...');
+    console.log('═══════════════════════════════════════');
+    
+    // 尝试关闭10次
+    const MAX_TRIES = 10;
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      console.log(`\n🔄 尝试关闭 (${attempt}/${MAX_TRIES})...`);
+      
+      // 方法: 直接用 AppleScript 聚焦询问窗口并按 Escape
+      try {
+        const script = `
+          tell application "System Events"
+            tell process "Aliworkbench"
+              -- 先激活整个应用
+              set frontmost to true
+              delay 0.1
+              -- 遍历窗口找到"询问"
+              repeat with i from 1 to count of windows
+                try
+                  set wName to name of window i
+                  if wName contains "询问" then
+                    -- 提升窗口层级
+                    perform action "AXRaise" of window i
+                    delay 0.1
+                    -- 按 Escape
+                    key code 53
+                    delay 0.1
+                    -- 再按 Enter 作为备选
+                    key code 36
+                    return "DONE"
+                  end if
+                end try
+              end repeat
+              return "NOT_FOUND"
+            end tell
+          end tell
+        `;
+        
+        const result = runScript(script).trim();
+        console.log(`  📋 关闭结果: ${result}`);
+      } catch (e) {
+        console.log(`  ⚠️ 关闭失败: ${e}`);
+      }
+      
+      // 检查是否关闭了
+      execSync('sleep 0.5');
+      const currentWindows = getQianniuWindowNames();
+      const stillHas = currentWindows.some(w => w.includes('询问'));
+      if (!stillHas) {
+        console.log(`\n✅ 尝试 ${attempt} 次后成功关闭询问窗口！`);
+        return true;
+      }
+      console.log(`  ⚠️ 窗口仍在，剩余 ${MAX_TRIES - attempt} 次尝试`);
+    }
+    
+    // 10次都失败了，播放声音并提示手动处理
+    console.log('\n═══════════════════════════════════════');
+    console.log('🔴  自动关闭失败！请手动关闭询问窗口');
+    console.log('   关闭后按 Enter 继续...');
+    console.log('═══════════════════════════════════════');
+    
+    // 播放提示音 (macOS)
+    try {
+      execSync('afplay /System/Library/Sounds/Basso.aiff', { timeout: 2000 });
+      execSync('afplay /System/Library/Sounds/Basso.aiff', { timeout: 2000 });
+    } catch {}
+    
+    // 暂停等待用户
+    const readline = require('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await new Promise<void>(resolve => rl.question('', () => { rl.close(); resolve(); }));
+    
+    // 验证是否关闭
+    const windowsAfter = getQianniuWindowNames();
+    if (!windowsAfter.some(w => w.includes('询问'))) {
+      console.log('✅ 询问窗口已手动关闭');
+      return true;
+    }
+  }
+  
+  // 策略1: 尝试按键关闭（先按 Escape，再按 Enter）
+  console.log('🔍 策略1: 尝试按键关闭弹窗...');
+  closePopupByKey();
+  
+  // 发送按键后检查弹窗是否还存在
+  execSync('sleep 0.5');  // 等待窗口关闭动画
+  const windowsAfterKey = getQianniuWindowNames();
+  const stillHasPopup = windowsAfterKey.some(w => 
+    popupKeywords.some(kw => w.includes(kw))
+  );
+  if (!stillHasPopup) {
+    console.log('✅ 按键关闭成功');
+    return true;
+  }
+  console.log('⚠️ 按键关闭无效，弹窗仍在');
+  
+  // 策略2: 尝试点击关闭按钮
+  console.log('🔍 策略2: 尝试点击关闭按钮...');
+  if (closePopupByClick()) {
+    console.log('✅ 点击关闭按钮成功');
+    return true;
+  }
+  
+  // 策略3: 获取窗口列表并关闭匹配关键词的窗口
+  const allWindows = getQianniuWindowNames();
+  console.log(`📋 当前窗口列表: ${allWindows.length} 个`);
+  
+  // 检查是否有匹配的弹窗
+  const matchedWindows = allWindows.filter(w => 
+    popupKeywords.some(kw => w.includes(kw))
+  );
+  
+  if (matchedWindows.length === 0) {
+    return false;
+  }
+  
+  // 关闭匹配的窗口
+  console.log(`🔍 检测到 ${matchedWindows.length} 个弹窗`);
+  const closedCount = closeWindowsContainingKeywords(popupKeywords);
+  
+  if (closedCount > 0) {
+    console.log(`✅ 共关闭 ${closedCount} 个弹窗`);
+    execSync('sleep 0.3');
+    return true;
+  }
+  
   return false;
 }
 

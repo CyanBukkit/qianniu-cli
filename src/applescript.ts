@@ -284,3 +284,51 @@ export function pressEnter(): void {
     end tell
   `);
 }
+
+/**
+ * 关闭包含指定文字的窗口
+ * @param text 要查找的窗口标题文字
+ * @param processName 进程名，默认为 "Aliworkbench"（千牛）
+ * @returns 是否成功关闭
+ */
+export function closeWindowContainingText(text: string, processName = 'Aliworkbench'): boolean {
+  try {
+    const script = `
+      tell application "System Events"
+        tell process "${processName}"
+          set winList to windows
+          repeat with win in winList
+            try
+              set winName to name of win
+              if winName contains "${text}" then
+                close win
+                return "CLOSED"
+              end if
+            end try
+          end repeat
+          return "NOT_FOUND"
+        end tell
+      end tell
+    `;
+
+    const result = runScriptSync(script);
+    return result.trim() === 'CLOSED';
+  } catch (e) {
+    console.error(`关闭窗口失败: ${e}`);
+    return false;
+  }
+}
+
+/**
+ * 关闭当前活动窗口 (Cmd+W)
+ * @param processName 进程名，默认为 "Aliworkbench"
+ */
+export function closeActiveWindow(processName = 'Aliworkbench'): void {
+  runScriptSync(`
+    tell application "System Events"
+      tell process "${processName}"
+        keystroke "w" using command down
+      end tell
+    end tell
+  `);
+}
