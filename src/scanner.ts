@@ -4,7 +4,7 @@
  */
 
 import { execSync } from 'child_process';
-import { screenshot } from './ocr';
+import { screenshot } from './clipboard';
 
 // 接待中心窗口（硬编码，可通过 listWindows 动态获取）
 const RECEPTION = {

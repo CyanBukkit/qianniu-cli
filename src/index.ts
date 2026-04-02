@@ -9,6 +9,7 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import Tesseract from 'tesseract.js';
+import { askAIAsync } from './ai-client';
 
 // ============ 弹窗检测与关闭 =================
 
@@ -421,7 +422,7 @@ function minimizeOtherWindows(): void {
   `;
   runScript(script);
 }
-import { screenshot, screenshotChat, recognizeText, detectChanges } from './ocr';
+import { screenshot, screenshotChat, recognizeText, detectChanges } from './clipboard';
 import {
   listWindows,
   getWindowRect,
@@ -836,13 +837,21 @@ function sendReply(text: string): boolean {
     // 注意：monitorCycle 已经点击过"新的客户咨询"并等待跳转
     // 这里不再重复点击，直接点击聊天区域
     
-    // 1. 点击聊天区域（消息输入框位置）
+    // 1. 激活千牛窗口，防止缩回程序坞
+    activateApp(ALIWORKBENCH);
+    execSync('sleep 0.3');
+    
+    // 2. 点击聊天区域（消息输入框位置）
     console.log('  → 点击聊天区域');
     const chatAreaPoint = loadRecordedPoint('聊天区域');
     if (chatAreaPoint) {
       console.log(`  → 点击聊天输入框: (${chatAreaPoint.x}, ${chatAreaPoint.y})`);
       clickAt(chatAreaPoint.x, chatAreaPoint.y);
       execSync('sleep 0.5');  // 增加等待时间，确保输入框获得焦点
+      
+      // 再次激活，确保窗口不会被点击带跑
+      activateApp(ALIWORKBENCH);
+      execSync('sleep 0.2');
     } else {
       console.log('  ⚠️ 未找到"聊天记录"坐标，尝试使用标定配置');
       // 备选：使用 calibrate.json 中的坐标
@@ -967,38 +976,50 @@ async function monitorCycle(intervalMs = 5000) {
           execSync('sleep 0.3');
         }
         
-        // 3. 直接发随机消息（不等待OCR）
+        // 3. 检测到新咨询，先发随机快捷回复稳住买家
         if (autoReplyEnabled) {
-          console.log('📤 检测到新咨询，直接发送随机回复...');
-          
-          // 随机选一条回复
-          const config = loadConfig();
-          const enabledRules = config.rules.filter(r => r.enabled);
-          if (enabledRules.length > 0) {
-            const randomRule = enabledRules[Math.floor(Math.random() * enabledRules.length)];
-            let reply = randomRule.reply;
-            
-            // 如果是随机回复模式
-            if (reply === 'RANDOM' && randomRule.randomReplies && randomRule.randomReplies.length > 0) {
-              reply = randomRule.randomReplies[Math.floor(Math.random() * randomRule.randomReplies.length)];
-            }
-            
-            console.log(`🤖 自动回复: ${reply}`);
-            const ok = sendReply(reply);
-            if (ok) {
-              console.log('✅ 已自动发送');
-            } else {
-              console.log('❌ 自动发送失败');
-            }
+          const quickReplies = [
+            '在的我在打字等一下',
+            '店主眼睛不太好稍等下我看看你在说什么',
+            '收到你的消息了我正在思考',
+            '我在的你等一下',
+          ];
+          const quickReply = quickReplies[Math.floor(Math.random() * quickReplies.length)];
+          console.log(`📤 发送快捷回复: ${quickReply}`);
+          const ok = sendReply(quickReply);
+          if (ok) {
+            console.log('✅ 已发送');
+          } else {
+            console.log('❌ 发送失败');
           }
         }
         
-        // 4. 发送后做OCR（TODO：后续可以分析买家消息做智能回复）
-        console.log('🔍 做OCR记录买家消息...');
+        // 4. 拦截买家消息 → 发给 AI → 获取回复 → 发送
+        console.log('🔍 拦截买家消息...');
         try {
           const messages = await readMessages();
           if (messages.length > 0) {
             console.log(`  📋 读取到 ${messages.length} 条消息`);
+            const buyerMessage = messages.join('\n');
+            console.log(`  📤 发送给 AI 分析...`);
+
+            // 发给 AI 并等待回复
+            askAIAsync(
+              { messages: [{ role: 'user', content: `以下是客户与卖家之前的聊天记录，卖家的名是CyanBukkit网站，请回复时保持500字以内：\n${buyerMessage}` }] },
+              (response) => {
+                if (response.content) {
+                  console.log(`  🤖 AI 回复: ${response.content.substring(0, 50)}...`);
+                  const ok = sendReply(response.content);
+                  if (ok) {
+                    console.log('  ✅ AI 回复已发送');
+                  } else {
+                    console.log('  ❌ AI 回复发送失败');
+                  }
+                } else {
+                  console.log('  ⚠️ AI 未返回有效内容');
+                }
+              }
+            );
           }
         } catch (e) {
           console.log('  ⚠️ 读取失败:', e);
