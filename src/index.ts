@@ -562,7 +562,7 @@ function loadRecordedPoint(pointName: string): { x: number; y: number } | null {
       // 精确匹配 windowName
       const targetWindow = windows.find(w => w.name === point.windowName);
       if (!targetWindow) {
-        console.log(`⚠️ 找不到窗口: ${point.windowName}`);
+        console.log(` [${new Date().toLocaleString()}]  ⚠️找不到窗口: ${point.windowName}`);
         return null;
       }
       
@@ -597,7 +597,7 @@ function loadRecordedPoint(pointName: string): { x: number; y: number } | null {
       
       const result = runScript(windowScript);
       if (result === 'NOT_FOUND' || !result) {
-        console.log(`⚠️ 找不到窗口: ${point.windowName}`);
+        console.log(`⚠️ [${new Date().toLocaleString()}] 找不到窗口: ${point.windowName}`);
         return null;
       }
       
@@ -979,10 +979,14 @@ async function monitorCycle(intervalMs = 5000) {
         // 3. 检测到新咨询，先发随机快捷回复稳住买家
         if (autoReplyEnabled) {
           const quickReplies = [
-            '在的我在打字等一下',
-            '店主眼睛不太好稍等下我看看你在说什么',
-            '收到你的消息了我正在思考',
-            '我在的你等一下',
+            '香果正在敲键盘',
+            '香果正在深度思考中',
+            '收到你的消息了香果正在思考',
+            '香果在正在思考中',
+            '香果正在回复您的消息稍等几秒钟',
+            '⭕️ 香果回应加载中... ',
+            '⭕️ 思考中...',
+            '👩‍💻 香果正在敲键盘',
           ];
           const quickReply = quickReplies[Math.floor(Math.random() * quickReplies.length)];
           console.log(`📤 发送快捷回复: ${quickReply}`);
@@ -1030,7 +1034,7 @@ async function monitorCycle(intervalMs = 5000) {
         lastMessageText = '';  // 重置消息状态
       } else {
         // 没有新的客户咨询，跳过
-        console.log('📋 无新咨询消息，跳过...');
+        console.log(`📋 [${new Date().toLocaleString()}] 无新咨询消息，跳过...`);
       }
     } catch (e) {
       console.error('处理失败:', e);

@@ -153,8 +153,10 @@ export function askAIAsync(
     stream: false,
   })
     .then((data) => {
+      const aiContent = data.choices?.[0]?.message?.content || '';
+      const prefixedContent = aiContent ? `CyanBukkit香果智能客服: ${aiContent} by 大庆方韵一人公司` : '';
       callback({
-        content: data.choices?.[0]?.message?.content || '',
+        content: prefixedContent,
         model: data.model || model,
         usage: data.usage,
       });
