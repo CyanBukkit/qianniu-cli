@@ -6,3 +6,6 @@ dist/
 # OCR 语言包（本地下载，不要提交）
 *.traineddata
 *.traineddata.gz
+
+# 运行时数据
+data/pending-replies.json

@@ -7,6 +7,7 @@
 import * as https from 'https';
 import { URL } from 'url';
 import { execSync } from 'child_process';
+import { AI_SENDER_PREFIX } from './session';
 
 // ============ 配置 ============
 
@@ -154,7 +155,7 @@ export function askAIAsync(
   })
     .then((data) => {
       const aiContent = data.choices?.[0]?.message?.content || '';
-      const prefixedContent = aiContent ? `CyanBukkit香果智能客服: ${aiContent}` : '';
+      const prefixedContent = aiContent ? `${AI_SENDER_PREFIX} ${aiContent}` : '';
       callback({
         content: prefixedContent,
         model: data.model || model,

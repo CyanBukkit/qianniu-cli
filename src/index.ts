@@ -36,6 +36,8 @@ import { monitorCycle, patrolCycle, setAutoReplyEnabled, getAutoReplyEnabled, st
 import { readMessages, openChat, scanBuyerList } from './runtime/read';
 import { sendReply } from './runtime/send';
 import { loadCalibrateConfig, loadRecordedPoint, RECEPTION, runScript } from './runtime/window';
+import { listPendingReplies, updatePendingReply } from './session';
+import { startTui } from './tui';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -44,6 +46,10 @@ async function main() {
   switch (cmd) {
     case 'monitor':
       await monitorCycle(5000);
+      break;
+
+    case 'tui':
+      await startTui(5000);
       break;
 
     case 'patrol':
@@ -161,6 +167,53 @@ async function main() {
       console.log('买家列表:');
       scanBuyerList().forEach(b => console.log(`  ${b.id} @(${b.x},${b.y})`));
       break;
+
+    case 'pending': {
+      const pendingReplies = listPendingReplies();
+      if (pendingReplies.length === 0) {
+        console.log('当前没有挂起回复');
+        break;
+      }
+
+      console.log(`当前有 ${pendingReplies.length} 条挂起回复:`);
+      pendingReplies.forEach(reply => {
+        console.log(`\n[${reply.id}] ${reply.createdAt}`);
+        console.log(`  买家: ${reply.buyerName}`);
+        console.log(`  状态: ${reply.status}`);
+        console.log(`  备注: ${reply.note || '(无)'}`);
+        console.log(`  原会话: ${reply.requestedFingerprint.buyerName} / ${reply.requestedFingerprint.tailSignature}`);
+        console.log(`  当前会话: ${reply.currentFingerprint.buyerName} / ${reply.currentFingerprint.tailSignature}`);
+        console.log(`  原因: ${reply.reason}`);
+        console.log(`  草稿: ${reply.draft}`);
+      });
+      break;
+    }
+
+    case 'pending-update': {
+      const id = args[1];
+      const status = args[2] as 'pending' | 'reviewing' | 'resolved' | 'ignored' | undefined;
+      const note = args.slice(3).join(' ').trim();
+
+      if (!id || !status) {
+        console.log('用法: npm run dev pending-update <id> <pending|reviewing|resolved|ignored> [备注]');
+        break;
+      }
+
+      const updated = updatePendingReply(id, {
+        status,
+        note: note || undefined,
+      });
+
+      if (!updated) {
+        console.log(`未找到挂起回复: ${id}`);
+        break;
+      }
+
+      console.log(`已更新 ${updated.id}`);
+      console.log(`  状态: ${updated.status}`);
+      console.log(`  备注: ${updated.note || '(无)'}`);
+      break;
+    }
 
     case 'calibrate': {
       console.log('=== 智能坐标标定 ===');
@@ -409,6 +462,7 @@ async function main() {
     default:
       console.log('用法:');
       console.log('  npm run dev monitor       - 监听新消息（带自动回复）');
+      console.log('  npm run dev tui           - 终端面板模式（实时状态 + 监听）');
       console.log('  npm run dev patrol        - 巡店模式');
       console.log('  npm run dev read          - 读取当前消息');
       console.log('  npm run dev send "hi"     - 发送消息');

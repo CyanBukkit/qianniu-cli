@@ -16,3 +16,22 @@ export interface Buyer {
   x: number;
   y: number;
 }
+
+export type ChatSenderRole = 'buyer' | 'seller' | 'unknown';
+
+export interface ParsedChatMessage {
+  senderName: string;
+  senderRole: ChatSenderRole;
+  timestamp: string;
+  content: string;
+  read: boolean;
+}
+
+export interface ChatFingerprint {
+  buyerName: string;
+  sellerName: string;
+  messageCount: number;
+  lastMessageAt: string;
+  lastBuyerMessage: string;
+  tailSignature: string;
+}

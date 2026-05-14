@@ -3,6 +3,7 @@ import { screenshot, recognizeText } from '../clipboard';
 import { Buyer } from '../types';
 import { ALIWORKBENCH, RECEPTION, getChatWindowPosition, loadCalibrateConfig, loadRecordedPoint, runScript } from './window';
 import { clickAt } from '../recorder';
+import { buildChatFingerprint, parseChatTranscript } from '../session';
 
 export function scanBuyerList(): Buyer[] {
   const script = `
@@ -91,6 +92,22 @@ export async function readMessages(): Promise<string[]> {
     .split('\n')
     .map(l => l.trim())
     .filter(l => l.length > 1 && !l.match(/^(ERROR|OCR)/));
+}
+
+export async function readChatTranscript(): Promise<string> {
+  const messages = await readMessages();
+  return messages.join('\n');
+}
+
+export async function readParsedChat() {
+  const transcript = await readChatTranscript();
+  const parsedMessages = parseChatTranscript(transcript);
+  const fingerprint = buildChatFingerprint(parsedMessages);
+  return {
+    transcript,
+    parsedMessages,
+    fingerprint,
+  };
 }
 
 function execSync(command: string): void {
