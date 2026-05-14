@@ -23,11 +23,17 @@ npm install
 ### 监听模式（自动回复）
 
 ```bash
-# 开发模式
+# 默认进入 TUI
+npm run dev
+
+# 显式进入 TUI
+npm run dev tui
+
+# 纯日志监听模式
 npm run dev monitor
 
 # 或使用打包后的二进制
-./qianniu-macos monitor
+./qianniu-macos tui
 ```
 
 启动后会：
@@ -63,7 +69,8 @@ TUI 会在终端内实时显示：
 
 | 命令 | 说明 |
 |------|------|
-| `npm run dev monitor` | 监听模式（自动回复） |
+| `npm run dev` | 默认进入终端 TUI |
+| `npm run dev monitor` | 监听模式（纯日志） |
 | `npm run dev tui` | 终端面板模式（实时状态 + 监听） |
 | `npm run dev patrol` | 巡店模式 |
 | `npm run dev read` | 读取当前消息 |

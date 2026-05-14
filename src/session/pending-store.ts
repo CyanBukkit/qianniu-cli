@@ -13,6 +13,7 @@ export interface PendingReply {
   buyerName: string;
   requestedFingerprint: ChatFingerprint;
   currentFingerprint: ChatFingerprint;
+  originalTranscript: string;
   draft: string;
   reason: string;
   status: 'pending' | 'reviewing' | 'resolved' | 'ignored';
@@ -55,6 +56,11 @@ export function listPendingReplies(): PendingReply[] {
   return loadStore().replies;
 }
 
+export function getPendingReply(id: string): PendingReply | null {
+  const store = loadStore();
+  return store.replies.find(reply => reply.id === id) || null;
+}
+
 export function updatePendingReply(
   id: string,
   updates: Partial<Pick<PendingReply, 'status' | 'note'>>
@@ -72,4 +78,14 @@ export function updatePendingReply(
 
   saveStore(store);
   return target;
+}
+
+export function deletePendingReply(id: string): PendingReply | null {
+  const store = loadStore();
+  const index = store.replies.findIndex(reply => reply.id === id);
+  if (index === -1) return null;
+
+  const [removed] = store.replies.splice(index, 1);
+  saveStore(store);
+  return removed;
 }

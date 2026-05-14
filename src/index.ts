@@ -41,7 +41,7 @@ import { startTui } from './tui';
 
 async function main() {
   const args = process.argv.slice(2);
-  const cmd = args[0] || 'monitor';
+  const cmd = args[0] || 'tui';
 
   switch (cmd) {
     case 'monitor':
