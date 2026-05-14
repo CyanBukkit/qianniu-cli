@@ -52,6 +52,7 @@ function createPendingReplyId(): string {
 export function setAutoReplyEnabled(enabled: boolean): void {
   autoReplyEnabled = enabled;
   setRuntimeAutoReply(enabled);
+  setRuntimePhase(enabled ? 'idle' : 'paused');
 }
 
 export function getAutoReplyEnabled(): boolean {
@@ -72,7 +73,7 @@ export async function monitorCycle(intervalMs = 5000): Promise<void> {
   appendRuntimeLog(`监听启动，间隔 ${intervalMs}ms`);
 
   console.log(`\n⏳ 监听中，每 ${intervalMs / 1000}s 检查一次...`);
-  console.log(`🤖 自动回复: ${autoReplyEnabled ? '已启用' : '已禁用'}`);
+  console.log(`🤖 任务状态: ${autoReplyEnabled ? '运行中' : '已暂停'}`);
   console.log('按 Ctrl+C 停止\n');
 
   const replyConfig = loadConfig();
@@ -83,6 +84,17 @@ export async function monitorCycle(intervalMs = 5000): Promise<void> {
     markRuntimePoll(monitorLoopCount, intervalMs);
     try {
       clearRuntimeError();
+
+      if (!autoReplyEnabled) {
+        setRuntimePhase('paused');
+        updateRuntimeSession({
+          status: 'paused',
+        });
+        appendRuntimeLog('任务已暂停，跳过本轮监听');
+        await new Promise(r => setTimeout(r, intervalMs));
+        continue;
+      }
+
       setRuntimePhase('查找新咨询');
       const newConsultPoint = loadRecordedPoint('新的客户咨询');
       if (newConsultPoint) {

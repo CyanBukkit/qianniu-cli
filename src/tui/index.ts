@@ -83,7 +83,7 @@ export async function startTui(intervalMs = 5000): Promise<void> {
     top: 0,
     left: 0,
     width: '100%',
-    height: 3,
+    height: 2,
     tags: true,
     padding: { left: 1, right: 1 },
     style: {
@@ -108,10 +108,10 @@ export async function startTui(intervalMs = 5000): Promise<void> {
 
   const summaryBox = blessed.box({
     parent: root,
-    top: 3,
+    top: 2,
     left: 0,
     width: '34%',
-    height: 12,
+    height: 8,
     label: ' 概览 ',
     tags: true,
     border: { type: 'line' },
@@ -125,10 +125,10 @@ export async function startTui(intervalMs = 5000): Promise<void> {
 
   const sessionBox = blessed.box({
     parent: root,
-    top: 3,
+    top: 2,
     left: '34%',
     width: '66%',
-    height: 12,
+    height: 8,
     label: ' 当前会话 ',
     tags: true,
     border: { type: 'line' },
@@ -142,10 +142,10 @@ export async function startTui(intervalMs = 5000): Promise<void> {
 
   const pendingList = blessed.list({
     parent: root,
-    top: 15,
+    top: 10,
     left: 0,
     width: '38%',
-    bottom: 6,
+    bottom: 1,
     label: ' 挂起回复 ',
     tags: true,
     border: { type: 'line' },
@@ -181,10 +181,10 @@ export async function startTui(intervalMs = 5000): Promise<void> {
 
   const pendingHint = blessed.box({
     parent: root,
-    top: 15,
+    top: 10,
     left: '38%',
     width: '62%',
-    bottom: 6,
+    bottom: 1,
     label: ' 说明 ',
     tags: true,
     border: { type: 'line' },
@@ -197,7 +197,7 @@ export async function startTui(intervalMs = 5000): Promise<void> {
 
   const detailPage = blessed.box({
     parent: root,
-    top: 3,
+    top: 2,
     left: 0,
     width: '100%',
     bottom: 1,
@@ -213,7 +213,7 @@ export async function startTui(intervalMs = 5000): Promise<void> {
     top: 0,
     left: 0,
     width: '100%',
-    height: 3,
+    height: 2,
     tags: true,
     padding: { left: 1, right: 1 },
     style: {
@@ -224,10 +224,10 @@ export async function startTui(intervalMs = 5000): Promise<void> {
 
   const detailBody = blessed.box({
     parent: detailPage,
-    top: 3,
+    top: 2,
     left: 0,
     width: '100%',
-    bottom: 3,
+    bottom: 2,
     tags: true,
     scrollable: true,
     alwaysScroll: true,
@@ -256,7 +256,7 @@ export async function startTui(intervalMs = 5000): Promise<void> {
     bottom: 0,
     left: 0,
     width: '100%',
-    height: 3,
+    height: 2,
     tags: true,
     padding: { left: 1, right: 1 },
     style: {
@@ -275,33 +275,25 @@ export async function startTui(intervalMs = 5000): Promise<void> {
     const pendingReplies = listPendingReplies();
 
     header.setContent([
-      `{bold}QIANNIU{/bold}  ${runtime.isRunning ? '[RUN]' : '[STOP]'}  ${runtime.autoReplyEnabled ? '[AUTO]' : '[MANUAL]'}  [${runtime.phase || 'idle'}]`,
-      `买家 ${runtime.currentSession.buyerName || '-'}   挂起 ${runtime.pendingReplyCount}   最近 ${formatTime(runtime.lastPollAt)}`,
+      `{bold}QIANNIU{/bold}  ${runtime.isRunning ? '[RUN]' : '[STOP]'}  ${runtime.autoReplyEnabled ? '[AUTO]' : '[MANUAL]'}  [${runtime.phase || 'idle'}]  买家 ${runtime.currentSession.buyerName || '-'}  挂起 ${runtime.pendingReplyCount}  最近 ${formatTime(runtime.lastPollAt)}`,
     ].join('\n'));
 
     summaryBox.setContent([
       `监控 ${runtime.isRunning ? '运行中' : '已停止'}`,
-      `自动 ${runtime.autoReplyEnabled ? '启用' : '关闭'}`,
+      `任务 ${runtime.autoReplyEnabled ? '运行中' : '已暂停'}`,
       `阶段 ${runtime.phase || '-'}`,
       `轮询 ${runtime.loopCount}`,
       `间隔 ${runtime.intervalMs} ms`,
       `买家 ${runtime.buyers.length}`,
       `挂起 ${runtime.pendingReplyCount}`,
-      '',
-      `按键`,
-      `a 自动开关`,
-      `Enter 打开挂起`,
-      `q 退出`,
+      `按键 a暂停  ↑↓选择  Enter查看  q返回`,
     ].join('\n'));
 
     sessionBox.setContent([
       `状态 ${runtime.currentSession.status || '-'}`,
       `签名 ${runtime.currentSession.tailSignature || '-'}`,
       `最后消息 ${runtime.currentSession.lastMessageAt || '-'}`,
-      '',
       `${runtime.currentSession.transcriptPreview || '(暂无聊天内容)'}`,
-      '',
-      `AI 草稿`,
       `${runtime.currentSession.lastAIReply || '(暂无)'}`,
     ].join('\n'));
 
@@ -324,12 +316,14 @@ export async function startTui(intervalMs = 5000): Promise<void> {
           `选中 ${selected.buyerName}`,
           `状态 ${selected.status}`,
           '',
+          `这是未发布给客户的消息`,
+          `按 Enter 打开详情页`,
+          `详情页可查看 AI 草稿和原始会话`,
+          '',
           `原因`,
           `${selected.reason}`,
-          '',
-          `按 Enter 进入详情页`,
         ].join('\n')
-      : '当前没有挂起回复');
+      : '当前没有挂起回复\n\n当 AI 回复因为会话切换或校验失败未发送时，会出现在这里。\n选中后按 Enter 查看。');
 
     detailPage.hide();
     pendingList.show();
@@ -340,8 +334,7 @@ export async function startTui(intervalMs = 5000): Promise<void> {
   function renderDetailView(reply: PendingReply): void {
     const detail = getPendingReply(reply.id) || reply;
     detailHeader.setContent([
-      `{bold}PENDING{/bold}  ${detail.buyerName}`,
-      `状态 ${detail.status}   创建 ${formatTime(detail.createdAt)}`,
+      `{bold}PENDING{/bold}  ${detail.buyerName}  状态 ${detail.status}  创建 ${formatTime(detail.createdAt)}`,
     ].join('\n'));
 
     detailBody.setContent([
@@ -355,7 +348,7 @@ export async function startTui(intervalMs = 5000): Promise<void> {
       detail.originalTranscript || '(无原文)',
     ].join('\n'));
 
-    detailFooter.setContent(' Enter 无操作   c 复制原文   d 删除挂起   q 返回 ');
+    detailFooter.setContent(' q 返回   c 复制原始会话   d 删除未发布消息 ');
 
     detailPage.show();
     pendingList.hide();
@@ -407,8 +400,8 @@ export async function startTui(intervalMs = 5000): Promise<void> {
   screen.key(['a'], () => {
     const next = !getAutoReplyEnabled();
     setAutoReplyEnabled(next);
-    appendRuntimeLog(`自动回复已切换为: ${next ? '启用' : '禁用'}`);
-    showFlash(`自动回复已${next ? '启用' : '关闭'}`);
+    appendRuntimeLog(`任务已${next ? '恢复' : '暂停'}`);
+    showFlash(`任务已${next ? '恢复' : '暂停'}`);
     renderMainView();
   });
 

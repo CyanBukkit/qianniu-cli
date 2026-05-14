@@ -451,12 +451,12 @@ async function main() {
 
     case 'reply-on':
       setAutoReplyEnabled(true);
-      console.log('✅ 自动回复已启用');
+      console.log('✅ 任务已恢复');
       break;
 
     case 'reply-off':
       setAutoReplyEnabled(false);
-      console.log('❌ 自动回复已禁用');
+      console.log('⏸️ 任务已暂停');
       break;
 
     default:
