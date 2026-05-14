@@ -9,3 +9,6 @@ dist/
 
 # 运行时数据
 data/pending-replies.json
+
+# 打包产物
+qianniu-macos
