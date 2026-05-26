@@ -35,7 +35,8 @@ import {
 import { monitorCycle, patrolCycle, setAutoReplyEnabled, getAutoReplyEnabled, stopMonitor } from './runtime/monitor';
 import { readMessages, openChat, scanBuyerList } from './runtime/read';
 import { sendReply } from './runtime/send';
-import { loadCalibrateConfig, loadRecordedPoint, RECEPTION, runScript } from './runtime/window';
+import { getReceptionWindowRect, loadCalibrateConfig, loadRecordedPoint, RECEPTION, runScript } from './runtime/window';
+import { getAuditLogDir, getTodayAuditLogPath, listAuditLogFiles, readRecentAuditLogs } from './runtime/audit-log';
 import { listPendingReplies, updatePendingReply } from './session';
 import { startTui } from './tui';
 
@@ -215,6 +216,20 @@ async function main() {
       break;
     }
 
+    case 'audit-log': {
+      const limit = Number(args[1] || 30);
+      const logs = readRecentAuditLogs(limit);
+      console.log(`审计日志目录: ${getAuditLogDir()}`);
+      console.log(`今日日志文件: ${getTodayAuditLogPath()}`);
+      console.log(`现有日志文件: ${listAuditLogFiles().join(', ') || '(无)'}`);
+      console.log(`最近 ${logs.length} 条记录:`);
+      logs.forEach(log => {
+        console.log(`\n[${log.at}] [${log.level}] ${log.event}`);
+        console.log(JSON.stringify(log.details, null, 2));
+      });
+      break;
+    }
+
     case 'calibrate': {
       console.log('=== 智能坐标标定 ===');
       console.log('请按步骤操作，程序会自动计算聊天区域位置\n');
@@ -227,20 +242,8 @@ async function main() {
 
       console.log('📋 步骤1: 获取千牛接待中心窗口位置...');
       const getWindowPos = () => {
-        const script = `
-          tell application "System Events"
-            tell process "Aliworkbench"
-              set w to window "t_1487330154436_074-接待中心"
-              set pos to position of w
-              set sz to size of w
-              return (item 1 of pos) & "," & (item 2 of pos) & "," & (item 1 of sz) & "," & (item 2 of sz)
-            end tell
-          end tell
-        `;
         try {
-          const result = runScript(script).trim();
-          const [x, y, w, h] = result.split(',').map(Number);
-          return { x, y, w, h };
+          return getReceptionWindowRect();
         } catch {
           return null;
         }

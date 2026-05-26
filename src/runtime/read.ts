@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import { screenshot, recognizeText } from '../clipboard';
 import { Buyer } from '../types';
-import { ALIWORKBENCH, RECEPTION, getChatWindowPosition, loadCalibrateConfig, loadRecordedPoint, runScript } from './window';
+import { ALIWORKBENCH, RECEPTION, getChatWindowPosition, getReceptionWindowRect, loadCalibrateConfig, loadRecordedPoint, runScript } from './window';
 import { clickAt } from '../recorder';
 import { buildChatFingerprint, parseChatTranscript } from '../session';
 
@@ -10,7 +10,23 @@ export function scanBuyerList(): Buyer[] {
     tell application "System Events"
       tell process "${ALIWORKBENCH}"
         set out to ""
-        tell window "t_1487330154436_074-接待中心"
+        set targetWindow to missing value
+        repeat with i from 1 to count of windows
+          try
+            set w to window i
+            set wName to name of w
+            if wName contains "接待中心" then
+              set targetWindow to w
+              exit repeat
+            end if
+          end try
+        end repeat
+        
+        if targetWindow is missing value then
+          return ""
+        end if
+        
+        tell targetWindow
           set g1 to group 1
           set axg to UI element 1 of g1
           repeat with i from 1 to count of UI elements of axg
@@ -77,9 +93,18 @@ export async function readMessages(): Promise<string[]> {
       chatW = windowPos.w;
       chatH = windowPos.h;
     } else {
-      chatX = RECEPTION.x + 260;
-      chatY = RECEPTION.y + 50;
-      console.log(`📍 使用默认坐标: (${chatX}, ${chatY})`);
+      const receptionRect = getReceptionWindowRect();
+      if (receptionRect) {
+        chatX = receptionRect.x + 260;
+        chatY = receptionRect.y + 50;
+        chatW = Math.max(receptionRect.w - 320, 600);
+        chatH = Math.max(receptionRect.h - 160, 300);
+        console.log(`📍 使用接待中心窗口推导坐标: (${chatX}, ${chatY}) ${chatW}x${chatH}`);
+      } else {
+        chatX = RECEPTION.x + 260;
+        chatY = RECEPTION.y + 50;
+        console.log(`📍 使用默认坐标: (${chatX}, ${chatY})`);
+      }
     }
   }
 

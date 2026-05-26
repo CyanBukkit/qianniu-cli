@@ -1,9 +1,18 @@
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import { Point, Rect } from '../types';
+import { appendAuditLog } from './audit-log';
 
 export const ALIWORKBENCH = 'Aliworkbench';
 export const RECEPTION: Rect = { x: 27, y: 38, w: 1310, h: 800 };
+
+interface WindowInfo {
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export function runScript(script: string): string {
   const tmpPath = `/tmp/qianniu-script-${Date.now()}.scpt`;
@@ -24,25 +33,144 @@ export function activateReception(): void {
   execSync('sleep 0.5');
 }
 
-export function getQianniuWindowNames(): string[] {
+function parseWindowList(result: string): WindowInfo[] {
+  return result
+    .split(';')
+    .filter(Boolean)
+    .map(seg => {
+      const [name, coords] = seg.split('|');
+      const parts = (coords || '').split(',').map((s: string) => parseInt(s.trim(), 10));
+      return {
+        name: name || '',
+        x: parts[0] || 0,
+        y: parts[1] || 0,
+        w: parts[2] || 0,
+        h: parts[3] || 0,
+      };
+    })
+    .filter(win => !!win.name);
+}
+
+function getAllQianniuWindows(): WindowInfo[] {
   try {
     const script = `
       tell application "System Events"
-        tell process "Aliworkbench"
-          set winNames to ""
+        tell process "${ALIWORKBENCH}"
+          set out to ""
           repeat with i from 1 to count of windows
             try
               set wName to name of window i
-              set winNames to winNames & wName & "|||"
+              set p to position of window i
+              set s to size of window i
+              set out to out & wName & "|" & (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s) & ";"
             end try
           end repeat
-          return winNames
+          return out
         end tell
       end tell
     `;
-    const result = runScript(script).trim();
-    if (!result) return [];
-    return result.split('|||').filter(Boolean);
+    const windows = parseWindowList(runScript(script));
+    appendAuditLog('window-scan', {
+      count: windows.length,
+      windows: windows.map(window => ({
+        name: window.name,
+        x: window.x,
+        y: window.y,
+        w: window.w,
+        h: window.h,
+      })),
+    });
+    return windows;
+  } catch {
+    appendAuditLog('window-scan-failed', {}, 'warn');
+    return [];
+  }
+}
+
+function getWindowHints(windowName: string, pointName?: string): string[] {
+  const hints = new Set<string>();
+  const add = (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed) hints.add(trimmed);
+  };
+
+  ['接待中心', '千牛工作台', '消息提醒', '询问', '单聊'].forEach(keyword => {
+    if (windowName.includes(keyword)) add(keyword);
+  });
+
+  const suffix = windowName.split('-').pop() || '';
+  if (suffix && suffix !== windowName) add(suffix);
+
+  if (pointName === '新的客户咨询') {
+    ['消息', '提醒', '收到', '询问'].forEach(add);
+  }
+
+  return Array.from(hints);
+}
+
+function resolveWindow(windowName: string, windows: WindowInfo[], pointName?: string): WindowInfo | null {
+  if (windows.length === 0) return null;
+
+  const exact = windows.find(win => win.name === windowName);
+  if (exact) {
+    appendAuditLog('window-resolve', {
+      mode: 'exact',
+      request: windowName,
+      pointName: pointName || '',
+      matched: exact.name,
+      x: exact.x,
+      y: exact.y,
+      w: exact.w,
+      h: exact.h,
+    });
+    return exact;
+  }
+
+  const hints = getWindowHints(windowName, pointName);
+  const scored = windows
+    .map(win => {
+      let score = 0;
+      for (const hint of hints) {
+        if (win.name.includes(hint)) score += hint.length <= 4 ? 100 : 140;
+      }
+      if (windowName.includes(win.name) || win.name.includes(windowName)) score += 40;
+      return { win, score, area: win.w * win.h };
+    })
+    .filter(item => item.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.area - a.area;
+    });
+
+  const resolved = scored[0]?.win || null;
+  appendAuditLog('window-resolve', {
+    mode: resolved ? 'fuzzy' : 'miss',
+    request: windowName,
+    pointName: pointName || '',
+    hints,
+    candidates: scored.slice(0, 5).map(item => ({
+      name: item.win.name,
+      score: item.score,
+      area: item.area,
+      x: item.win.x,
+      y: item.win.y,
+      w: item.win.w,
+      h: item.win.h,
+    })),
+    matched: resolved?.name || '',
+  }, resolved ? 'info' : 'warn');
+  return resolved;
+}
+
+export function getReceptionWindowRect(): Rect | null {
+  const target = resolveWindow('接待中心', getAllQianniuWindows());
+  if (!target) return null;
+  return { x: target.x, y: target.y, w: target.w, h: target.h };
+}
+
+export function getQianniuWindowNames(): string[] {
+  try {
+    return getAllQianniuWindows().map(win => win.name);
   } catch {
     return [];
   }
@@ -296,37 +424,12 @@ export async function closePopups(): Promise<boolean> {
 }
 
 export function getChatWindowPosition(): Rect | null {
-  const script = `
-    tell application "System Events"
-      tell process "Aliworkbench"
-        set chatWindow to missing value
-        try
-          set allWindows to every window
-          repeat with w in allWindows
-            set winName to name of w
-            if winName contains "单聊" then
-              set chatWindow to w
-              exit repeat
-            end if
-          end repeat
-        end try
-
-        if chatWindow is missing value then
-          return "NOT_FOUND"
-        end if
-
-        set winPos to position of chatWindow
-        set winSize to size of chatWindow
-        return (item 1 of winPos) & "," & (item 2 of winPos) & "," & (item 1 of winSize) & "," & (item 2 of winSize)
-      end tell
-    end tell
-  `;
-
   try {
-    const result = runScript(script).trim();
-    if (result === 'NOT_FOUND') return null;
+    const windows = getAllQianniuWindows();
+    const chatWindow = resolveWindow('单聊', windows) || resolveWindow('接待中心', windows);
+    if (!chatWindow) return null;
 
-    const [x, y, w, h] = result.split(',').map(Number);
+    const { x, y, w, h } = chatWindow;
     return {
       x: x + 20,
       y: y + 60,
@@ -360,41 +463,36 @@ export function loadRecordedPoint(pointName: string): Point | null {
         return null;
       }
 
-      const windowScript = `
-        tell application "System Events"
-          tell process "${ALIWORKBENCH}"
-            set out to ""
-            repeat with i from 1 to count of windows
-              set wName to name of window i
-              set p to position of window i
-              set s to size of window i
-              set out to out & wName & "|" & (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s) & ";"
-            end repeat
-            return out
-          end tell
-        end tell
-      `;
-
-      const result = runScript(windowScript);
-      if (!result) return null;
-
-      const windows = result.split(';').filter(Boolean).map(seg => {
-        const [name, coords] = seg.split('|');
-        const parts = coords.split(',').map((s: string) => parseInt(s.trim(), 10));
-        return { name: name || '', x: parts[0] || 0, y: parts[1] || 0, w: parts[2] || 0, h: parts[3] || 0 };
-      });
-
-      const targetWindow = windows.find(w => w.name === point.windowName);
+      const windows = getAllQianniuWindows();
+      const targetWindow = resolveWindow(point.windowName, windows, pointName);
       if (!targetWindow) {
         console.log(` [${new Date().toLocaleString()}]  ⚠️找不到窗口: ${point.windowName}`);
+        if (windows.length > 0) {
+          console.log(`  当前窗口: ${windows.map(w => w.name).join(' | ')}`);
+        }
+        appendAuditLog('recorded-point-miss', {
+          pointName,
+          pointType,
+          expectedWindow: point.windowName,
+          currentWindows: windows.map(w => w.name),
+        }, 'warn');
         return null;
       }
 
       const { x: wx, y: wy, w: ww, h: wh } = targetWindow;
-      return {
+      const resolvedPoint = {
         x: Math.round(wx + (point.ratioX || 0) * ww),
         y: Math.round(wy + (point.ratioY || 0) * wh),
       };
+      appendAuditLog('recorded-point-resolve', {
+        pointName,
+        pointType,
+        expectedWindow: point.windowName,
+        matchedWindow: targetWindow.name,
+        windowRect: { x: wx, y: wy, w: ww, h: wh },
+        resolvedPoint,
+      });
+      return resolvedPoint;
     }
 
     if (pointType === 'offset') {
@@ -403,32 +501,35 @@ export function loadRecordedPoint(pointName: string): Point | null {
         return null;
       }
 
-      const windowScript = `
-        tell application "System Events"
-          tell process "${ALIWORKBENCH}"
-            try
-              tell window "${point.windowName}"
-                set p to position
-                return (item 1 of p) & "," & (item 2 of p)
-              end tell
-            on error
-              return "NOT_FOUND"
-            end try
-          end tell
-        end tell
-      `;
-
-      const result = runScript(windowScript);
-      if (result === 'NOT_FOUND' || !result) {
+      const windows = getAllQianniuWindows();
+      const targetWindow = resolveWindow(point.windowName, windows, pointName);
+      if (!targetWindow) {
         console.log(`⚠️ [${new Date().toLocaleString()}] 找不到窗口: ${point.windowName}`);
+        if (windows.length > 0) {
+          console.log(`  当前窗口: ${windows.map(w => w.name).join(' | ')}`);
+        }
+        appendAuditLog('recorded-point-miss', {
+          pointName,
+          pointType,
+          expectedWindow: point.windowName,
+          currentWindows: windows.map(w => w.name),
+        }, 'warn');
         return null;
       }
 
-      const [wx, wy] = result.split(',').map(Number);
-      return {
-        x: wx + point.offsetX,
-        y: wy + point.offsetY,
+      const resolvedPoint = {
+        x: targetWindow.x + point.offsetX,
+        y: targetWindow.y + point.offsetY,
       };
+      appendAuditLog('recorded-point-resolve', {
+        pointName,
+        pointType,
+        expectedWindow: point.windowName,
+        matchedWindow: targetWindow.name,
+        windowRect: { x: targetWindow.x, y: targetWindow.y, w: targetWindow.w, h: targetWindow.h },
+        resolvedPoint,
+      });
+      return resolvedPoint;
     }
 
     console.log(`⚠️ 录制点 "${pointName}" 类型未知: ${pointType}`);
@@ -460,17 +561,9 @@ export function loadCalibrateConfig(): Rect | null {
 
     const getCurrentWindowPos = (): Rect | null => {
       try {
-        const posScript = `tell application "System Events" to tell process "Aliworkbench" to get position of window 1`;
-        const sizeScript = `tell application "System Events" to tell process "Aliworkbench" to get size of window 1`;
-
-        const posResult = execSync(`osascript -e '${posScript}'`, { encoding: 'utf8' }).trim();
-        const sizeResult = execSync(`osascript -e '${sizeScript}'`, { encoding: 'utf8' }).trim();
-
-        const [x, y] = posResult.split(',').map((s: string) => parseInt(s.trim(), 10));
-        const [w, h] = sizeResult.split(',').map((s: string) => parseInt(s.trim(), 10));
-
-        if (isNaN(x) || isNaN(y)) return null;
-        return { x, y, w, h };
+        const window = resolveWindow('接待中心', getAllQianniuWindows()) || getAllQianniuWindows()[0];
+        if (!window) return null;
+        return { x: window.x, y: window.y, w: window.w, h: window.h };
       } catch {
         return null;
       }
