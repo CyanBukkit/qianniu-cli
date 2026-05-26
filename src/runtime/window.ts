@@ -14,6 +14,10 @@ interface WindowInfo {
   h: number;
 }
 
+const NEW_CONSULTATION_WINDOW_SUFFIX = '消息提醒';
+const NEW_CONSULTATION_BLOCKED_SUFFIXES = ['消息通知'];
+const SERVICE_ATTITUDE_WINDOW_KEYWORD = '服务态度提醒';
+
 export function runScript(script: string): string {
   const tmpPath = `/tmp/qianniu-script-${Date.now()}.scpt`;
   fs.writeFileSync(tmpPath, script);
@@ -31,6 +35,10 @@ export function activateApp(name: string): void {
 export function activateReception(): void {
   activateApp(ALIWORKBENCH);
   execSync('sleep 0.5');
+}
+
+export function clickAt(x: number, y: number): void {
+  execSync(`cliclick c:${Math.round(x)},${Math.round(y)}`, { timeout: 5000 });
 }
 
 function parseWindowList(result: string): WindowInfo[] {
@@ -102,14 +110,49 @@ function getWindowHints(windowName: string, pointName?: string): string[] {
   if (suffix && suffix !== windowName) add(suffix);
 
   if (pointName === '新的客户咨询') {
-    ['消息', '提醒', '收到', '询问'].forEach(add);
+    add(NEW_CONSULTATION_WINDOW_SUFFIX);
   }
 
   return Array.from(hints);
 }
 
+function getWindowSuffix(windowName: string): string {
+  const segments = windowName.split('-');
+  return (segments[segments.length - 1] || windowName).trim();
+}
+
+function isBlockedNewConsultationWindow(windowName: string): boolean {
+  const suffix = getWindowSuffix(windowName);
+  return NEW_CONSULTATION_BLOCKED_SUFFIXES.includes(suffix);
+}
+
+function findStrictNewConsultationWindow(windows: WindowInfo[]): WindowInfo | null {
+  const exactMatch = windows.find(win => getWindowSuffix(win.name) === NEW_CONSULTATION_WINDOW_SUFFIX) || null;
+  appendAuditLog('new-consultation-window-match', {
+    mode: exactMatch ? 'strict' : 'miss',
+    expectedSuffix: NEW_CONSULTATION_WINDOW_SUFFIX,
+    blockedSuffixes: NEW_CONSULTATION_BLOCKED_SUFFIXES,
+    windows: windows.map(win => ({
+      name: win.name,
+      suffix: getWindowSuffix(win.name),
+    })),
+    matched: exactMatch?.name || '',
+  }, exactMatch ? 'info' : 'warn');
+  return exactMatch;
+}
+
+export function getNewConsultationWindowInfo(): Point & { name: string; w: number; h: number } | null {
+  const matchedWindow = findStrictNewConsultationWindow(getAllQianniuWindows());
+  if (!matchedWindow) return null;
+  return matchedWindow;
+}
+
 function resolveWindow(windowName: string, windows: WindowInfo[], pointName?: string): WindowInfo | null {
   if (windows.length === 0) return null;
+
+  if (pointName === '新的客户咨询') {
+    return findStrictNewConsultationWindow(windows);
+  }
 
   const exact = windows.find(win => win.name === windowName);
   if (exact) {
@@ -129,6 +172,9 @@ function resolveWindow(windowName: string, windows: WindowInfo[], pointName?: st
   const hints = getWindowHints(windowName, pointName);
   const scored = windows
     .map(win => {
+      if (pointName === '新的客户咨询' && isBlockedNewConsultationWindow(win.name)) {
+        return { win, score: 0, area: win.w * win.h };
+      }
       let score = 0;
       for (const hint of hints) {
         if (win.name.includes(hint)) score += hint.length <= 4 ? 100 : 140;
@@ -174,6 +220,34 @@ export function getQianniuWindowNames(): string[] {
   } catch {
     return [];
   }
+}
+
+export function hasServiceAttitudePrompt(): boolean {
+  return getQianniuWindowNames().some(name => name.includes(SERVICE_ATTITUDE_WINDOW_KEYWORD));
+}
+
+export function resolveServiceAttitudePrompt(): boolean {
+  if (!hasServiceAttitudePrompt()) {
+    return false;
+  }
+
+  const actionPoint = loadRecordedPoint('服务态度');
+  if (!actionPoint) {
+    appendAuditLog('service-attitude-miss', {
+      reason: 'missing-recorded-point',
+      pointName: '服务态度',
+    }, 'warn');
+    return false;
+  }
+
+  appendAuditLog('service-attitude-resolve', {
+    pointName: '服务态度',
+    x: actionPoint.x,
+    y: actionPoint.y,
+  }, 'warn');
+  clickAt(actionPoint.x, actionPoint.y);
+  execSync('sleep 0.5');
+  return true;
 }
 
 export function closeWindowsContainingKeywords(keywords: string[], processName = ALIWORKBENCH): number {

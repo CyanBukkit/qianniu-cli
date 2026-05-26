@@ -14,7 +14,7 @@ import { AI_SENDER_PREFIX } from './session';
 const AI_API_URL = 'http://127.0.0.1:18789/v1/chat/completions';
 const AI_API_KEY = 'a0fa68aa50e017912fae7941822f7a1842dba7b05e156dc3';
 const DEFAULT_MODEL = 'openclaw';
-const AI_TIMEOUT_MS = 3 * 60 * 1000; // 3分钟超时
+const AI_TIMEOUT_MS = 2 * 60 * 1000; // 120 秒超时
 
 // ============ 类型定义 ============
 
@@ -34,6 +34,8 @@ export interface AIRequestOptions {
 export interface AIResponse {
   content: string;
   model: string;
+  timedOut?: boolean;
+  error?: string;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -138,7 +140,7 @@ export async function askAI(options: AIRequestOptions): Promise<AIResponse> {
 /**
  * 异步调用 AI（不等待回复）
  * 适用于千牛自动化中后台处理
- * 超时3分钟，返回安抚消息并播放提示音
+ * 超时 120 秒，返回超时标记并播放提示音
  */
 export function askAIAsync(
   options: AIRequestOptions,
@@ -165,11 +167,11 @@ export function askAIAsync(
     .catch((error: Error) => {
       console.error('❌ AI 请求失败:', error.message);
       if (error.message === 'TIMEOUT') {
-        console.log('⏰ AI 请求超时，返回安抚消息并播放提示音');
+        console.log('⏰ AI 请求超时，返回超时标记并播放提示音');
         playNotificationSound();
-        callback({ content: '我没理解你的问题请等一下', model });
+        callback({ content: '', model, timedOut: true, error: 'TIMEOUT' });
       } else {
-        callback({ content: '', model });
+        callback({ content: '', model, error: error.message });
       }
     });
 }

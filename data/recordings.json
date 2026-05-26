@@ -150,6 +150,13 @@
       "offsetX": 839.50390625,
       "offsetY": 108.625,
       "recordedAt": "2026-05-14T11:47:06.547Z"
+    },
+    {
+      "name": "服务态度",
+      "type": "fixed",
+      "fixedX": 742,
+      "fixedY": 425,
+      "recordedAt": "2026-05-26T09:08:58.320Z"
     }
   ]
 }

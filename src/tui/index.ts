@@ -291,6 +291,7 @@ export async function startTui(intervalMs = 5000): Promise<void> {
 
     sessionBox.setContent([
       `状态 ${runtime.currentSession.status || '-'}`,
+      `动作 ${runtime.currentSession.statusNote || '-'}`,
       `签名 ${runtime.currentSession.tailSignature || '-'}`,
       `最后消息 ${runtime.currentSession.lastMessageAt || '-'}`,
       `${runtime.currentSession.transcriptPreview || '(暂无聊天内容)'}`,

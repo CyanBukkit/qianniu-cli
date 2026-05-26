@@ -1,7 +1,30 @@
 import { execSync } from 'child_process';
-import { clickAt } from '../recorder';
-import { ALIWORKBENCH, activateApp, loadCalibrateConfig, loadRecordedPoint, runScript } from './window';
+import {
+  ALIWORKBENCH,
+  activateApp,
+  clickAt,
+  hasServiceAttitudePrompt,
+  loadCalibrateConfig,
+  loadRecordedPoint,
+  resolveServiceAttitudePrompt,
+  runScript,
+} from './window';
 import { appendAuditLog } from './audit-log';
+
+function handleServiceAttitudePrompt(stage: string): void {
+  if (!hasServiceAttitudePrompt()) {
+    return;
+  }
+
+  appendAuditLog('service-attitude-detected', {
+    stage,
+  }, 'warn');
+  const resolved = resolveServiceAttitudePrompt();
+  appendAuditLog('service-attitude-result', {
+    stage,
+    resolved,
+  }, resolved ? 'warn' : 'error');
+}
 
 export function sendTextViaClipboard(text: string): void {
   console.log(`  📋 准备发送: "${text.substring(0, 30)}..."`);
@@ -9,6 +32,7 @@ export function sendTextViaClipboard(text: string): void {
     preview: text.substring(0, 80),
     length: text.length,
   });
+  handleServiceAttitudePrompt('before-copy');
 
   const escapedText = text.replace(/"/g, '\\"').replace(/'/g, "\\'");
   execSync(`printf '%s' "${escapedText}" | pbcopy`, { encoding: 'utf8' });
@@ -20,7 +44,10 @@ export function sendTextViaClipboard(text: string): void {
   execSync('sleep 0.1');
   runScript(`tell application "System Events" to keystroke "v" using command down`);
   execSync('sleep 0.2');
+  handleServiceAttitudePrompt('after-paste-before-return');
   runScript(`tell application "System Events" to keystroke return`);
+  execSync('sleep 0.2');
+  handleServiceAttitudePrompt('after-return');
   console.log('  📤 已回车发送');
   appendAuditLog('send-clipboard-finish', {
     preview: text.substring(0, 80),
@@ -37,6 +64,7 @@ export function sendReply(text: string): boolean {
     });
     activateApp(ALIWORKBENCH);
     execSync('sleep 0.3');
+    handleServiceAttitudePrompt('before-focus-input');
 
     console.log('  → 点击聊天区域');
     const chatAreaPoint = loadRecordedPoint('聊天区域');

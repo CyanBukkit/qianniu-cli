@@ -15,6 +15,7 @@ export interface RuntimeSessionState {
   buyerMessagesPreview: string[];
   lastAIReply: string;
   status: string;
+  statusNote: string;
 }
 
 export interface RuntimeStateSnapshot {
@@ -50,6 +51,7 @@ const runtimeState: RuntimeStateSnapshot = {
     buyerMessagesPreview: [],
     lastAIReply: '',
     status: 'idle',
+    statusNote: '',
   },
   buyers: [],
   pendingReplyCount: 0,
@@ -85,6 +87,7 @@ export function resetRuntimeState(intervalMs = 5000, autoReplyEnabled = true): v
     buyerMessagesPreview: [],
     lastAIReply: '',
     status: 'idle',
+    statusNote: '',
   };
   runtimeState.buyers = [];
   runtimeState.pendingReplyCount = 0;

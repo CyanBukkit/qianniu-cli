@@ -4,8 +4,39 @@
  */
 
 import { execSync } from 'child_process';
+import { appendAuditLog } from './runtime/audit-log';
+import { activateApp, ALIWORKBENCH, clickAt, loadRecordedPoint, runScript } from './runtime/window';
 
 // ============ 拦截聊天内容 =================
+
+const CHAT_HEADER_RE = /^.+\d{4}-\d{1,2}-\d{1,2} \d{2}:\d{2}:\d{2}$/gm;
+const CHAT_CLIPBOARD_RETRY_LIMIT = 3;
+const CLIPBOARD_POLLUTION_MARKERS = [
+  '服务态度@fixed',
+  '/qianniu-automation/data/',
+];
+
+function isClipboardPolluted(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return trimmed.startsWith('/Users/')
+    || CLIPBOARD_POLLUTION_MARKERS.some(marker => trimmed.includes(marker));
+}
+
+function looksLikeChatTranscript(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || isClipboardPolluted(trimmed)) {
+    return false;
+  }
+
+  const headerMatches = trimmed.match(CHAT_HEADER_RE) || [];
+  return headerMatches.length >= 2 || (headerMatches.length >= 1 && trimmed.includes('已读'));
+}
+
+function releaseChatSelection(chatAreaPoint: { x: number; y: number }): void {
+  clickAt(chatAreaPoint.x, chatAreaPoint.y);
+  execSync('sleep 0.2');
+}
 
 /**
  * 拦截聊天区域内容
@@ -14,40 +45,74 @@ import { execSync } from 'child_process';
  */
 export function interceptChatContent(): string {
   try {
-    // 点击聊天记录区域（ratio模式）
+    // 统一复用 runtime/window 的定位逻辑，避免旧实现点到错误窗口。
     const chatAreaPoint = loadRecordedPoint('聊天记录');
     if (!chatAreaPoint) {
       console.log('⚠️ 未找到"聊天记录"坐标');
+      appendAuditLog('chat-intercept-miss', {
+        pointName: '聊天记录',
+      }, 'warn');
       return '';
     }
 
+    activateApp(ALIWORKBENCH);
+    execSync('sleep 0.2');
+
     console.log(`  📍 聊天记录: (${chatAreaPoint.x}, ${chatAreaPoint.y})`);
     console.log(`  📋 拦截聊天内容...`);
-    execSync(`cliclick c:${chatAreaPoint.x},${chatAreaPoint.y}`, { timeout: 5000 });
-    execSync('sleep 0.3');
+    for (let attempt = 1; attempt <= CHAT_CLIPBOARD_RETRY_LIMIT; attempt += 1) {
+      appendAuditLog('chat-intercept-focus', {
+        pointName: '聊天记录',
+        x: chatAreaPoint.x,
+        y: chatAreaPoint.y,
+        attempt,
+      });
+      clickAt(chatAreaPoint.x, chatAreaPoint.y);
+      execSync('sleep 0.3');
 
-    // 全选 Command+A
-    runScript(`tell application "System Events" to keystroke "a" using command down`);
-    execSync('sleep 0.2');
+      // 先清空剪贴板，避免复制失败时继续吃到上一次脏内容。
+      execSync(`printf '' | pbcopy`, { encoding: 'utf8' });
+      execSync('sleep 0.1');
 
-    // 复制 Command+C
-    runScript(`tell application "System Events" to keystroke "c" using command down`);
-    execSync('sleep 0.3');
+      runScript(`tell application "System Events" to keystroke "a" using command down`);
+      execSync('sleep 0.2');
 
-    // 读取剪贴板
-    const clipboard = execSync('pbpaste', { encoding: 'utf8' }).trim();
+      runScript(`tell application "System Events" to keystroke "c" using command down`);
+      execSync('sleep 0.3');
 
-    // 点击一下释放选区，方便下次复制
-    execSync(`cliclick c:${chatAreaPoint.x},${chatAreaPoint.y}`, { timeout: 5000 });
-    execSync('sleep 0.2');
+      const clipboard = execSync('pbpaste', { encoding: 'utf8' }).trim();
+      appendAuditLog('chat-intercept-copied', {
+        attempt,
+        length: clipboard.length,
+        preview: clipboard.slice(0, 300),
+      });
+      releaseChatSelection(chatAreaPoint);
 
-    // 只返回后1500字
-    const content = clipboard.length > 1500 ? clipboard.slice(-1500) : clipboard;
-    console.log(`  📋 内容 (${clipboard.length}字)`);
+      if (looksLikeChatTranscript(clipboard)) {
+        console.log(`  📋 内容 (${clipboard.length}字)`);
+        // 直接返回完整聊天，避免按字符截断后把消息头切断，导致买卖家识别串位。
+        return clipboard;
+      }
 
-    return content;
+      appendAuditLog('chat-intercept-invalid', {
+        attempt,
+        length: clipboard.length,
+        preview: clipboard.slice(0, 300),
+        reason: clipboard.trim() ? 'clipboard-not-chat-transcript' : 'clipboard-empty',
+      }, 'warn');
+      execSync('sleep 0.4');
+    }
+
+    appendAuditLog('chat-intercept-invalid', {
+      attempts: CHAT_CLIPBOARD_RETRY_LIMIT,
+      reason: 'retry-limit-exceeded',
+    }, 'warn');
+    return '';
   } catch (e) {
     console.error('拦截聊天内容失败:', e);
+    appendAuditLog('chat-intercept-failed', {
+      error: String(e),
+    }, 'error');
     return '';
   }
 }
@@ -60,117 +125,6 @@ export function getClipboard(): string {
     return execSync('pbpaste', { encoding: 'utf8' }).trim();
   } catch {
     return '';
-  }
-}
-
-// ============ 辅助函数 =================
-
-function runScript(script: string): string {
-  const tmpFile = `/tmp/qianniu-script-${Date.now()}.scpt`;
-  const fs = require('fs');
-  fs.writeFileSync(tmpFile, script);
-  try {
-    return execSync(`osascript ${tmpFile}`, { timeout: 5000, encoding: 'utf8' }).trim();
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch {}
-  }
-}
-
-/**
- * 加载录制点（从 recordings.json）
- * 支持 fixed 和 ratio 模式
- * 使用窗口索引方式避免中文转义问题
- */
-function loadRecordedPoint(pointName: string): { x: number; y: number } | null {
-  const fs = require('fs');
-  const recordingsPath = '/Users/liuyuxuanyi/Documents/qianniu-automation/data/recordings.json';
-  if (!fs.existsSync(recordingsPath)) return null;
-  
-  try {
-    const data = JSON.parse(fs.readFileSync(recordingsPath, 'utf8'));
-    const point = data.points?.find((p: any) => p.name === pointName);
-    if (!point) return null;
-    
-    // fixed 模式
-    if (point.type === 'fixed' || (point.fixedX !== undefined && point.fixedY !== undefined)) {
-      return { x: point.fixedX, y: point.fixedY };
-    }
-    
-    // ratio 模式 - 遍历所有窗口精确匹配
-    if (point.type === 'ratio' || point.ratioX !== undefined) {
-      // 尝试获取所有窗口，包括 AXWindow 属性
-      const windowScript = `
-        tell application "System Events"
-          tell process "Aliworkbench"
-            set out to ""
-            -- 获取标准窗口
-            repeat with i from 1 to count of windows
-              try
-                set wName to name of window i
-                set p to position of window i
-                set s to size of window i
-                set out to out & wName & "|" & (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s) & ";"
-              end try
-            end repeat
-            -- 尝试获取所有 UI 元素的窗口名称（包括子窗口/标签页）
-            try
-              set allUI to every UI element whose role is "AXWindow"
-              repeat with ui in allUI
-                try
-                  set wName to value of attribute "AXTitle" of ui
-                  set p to value of attribute "AXPosition" of ui
-                  set s to value of attribute "AXSize" of ui
-                  if wName is not "" then
-                    set out to out & wName & "|" & (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s) & ";"
-                  end if
-                end try
-              end repeat
-            end try
-            return out
-          end tell
-        end tell
-      `;
-
-      const result = runScript(windowScript);
-      console.log(`  🔍 AppleScript 返回原始数据: "${result}"`);
-      if (!result) return null;
-
-      const windows = result.split(';').filter(Boolean).map(seg => {
-        const [name, coords] = seg.split('|');
-        const parts = coords.split(',').map(s => parseInt(s.trim(), 10));
-        return { name: name || '', x: parts[0] || 0, y: parts[1] || 0, w: parts[2] || 0, h: parts[3] || 0 };
-      });
-
-      // 调试：打印当前所有窗口名
-      console.log(`  🔍 查找坐标点: "${pointName}"`);
-      console.log(`  🔍 目标窗口: "${point.windowName}"`);
-      console.log(`  🔍 当前窗口列表: ${windows.map(w => w.name).join(', ')}`);
-
-      // 使用录制时的 windowName 精确匹配
-      const targetWindow = windows.find(w => w.name === point.windowName);
-      if (!targetWindow) {
-        // 尝试模糊匹配（窗口名包含 "接待中心"）
-        const fuzzyMatch = windows.find(w => w.name.includes('接待中心'));
-        if (fuzzyMatch) {
-          console.log(`  ⚠️ 精确匹配失败，使用模糊匹配: "${fuzzyMatch.name}"`);
-          const { x: wx, y: wy, w: ww, h: wh } = fuzzyMatch;
-          const x = Math.round(wx + (point.ratioX || 0) * ww);
-          const y = Math.round(wy + (point.ratioY || 0) * wh);
-          return { x, y };
-        }
-        return null;
-      }
-      
-      const { x: wx, y: wy, w: ww, h: wh } = targetWindow;
-      const x = Math.round(wx + (point.ratioX || 0) * ww);
-      const y = Math.round(wy + (point.ratioY || 0) * wh);
-      
-      return { x, y };
-    }
-    
-    return null;
-  } catch {
-    return null;
   }
 }
 
