@@ -349,7 +349,7 @@ export async function startTui(intervalMs = 5000): Promise<void> {
       detail.originalTranscript || '(无原文)',
     ].join('\n'));
 
-    detailFooter.setContent(' q 返回   c 复制原始会话   d 删除未发布消息 ');
+    detailFooter.setContent(' q 返回   c 复制AI草稿   d 删除未发布消息 ');
 
     detailPage.show();
     pendingList.hide();
@@ -437,13 +437,13 @@ export async function startTui(intervalMs = 5000): Promise<void> {
 
   detailBody.key(['c'], () => {
     const detail = selectedPendingId ? getPendingReply(selectedPendingId) : null;
-    if (!detail?.originalTranscript) {
-      showFlash('没有可复制的原文');
+    if (!detail?.draft) {
+      showFlash('没有可复制的AI草稿');
       return;
     }
-    const copied = copyToClipboard(detail.originalTranscript);
-    showFlash(copied ? `已复制原文: ${detail.buyerName}` : '复制失败');
-    appendRuntimeLog(copied ? `已复制挂起原文 ${detail.id}` : `复制挂起原文失败 ${detail.id}`, copied ? 'info' : 'error');
+    const copied = copyToClipboard(detail.draft);
+    showFlash(copied ? `已复制AI草稿: ${detail.buyerName}` : '复制失败');
+    appendRuntimeLog(copied ? `已复制挂起AI草稿 ${detail.id}` : `复制挂起AI草稿失败 ${detail.id}`, copied ? 'info' : 'error');
   });
 
   detailBody.key(['d'], () => {

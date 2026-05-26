@@ -1,17 +1,20 @@
 import { execSync } from 'child_process';
-import { askAIAsync } from '../ai-client';
+import { askAI, askAIAsync } from '../ai-client';
 import { loadConfig } from '../reply';
 import {
   AI_SENDER_PREFIX,
   SELLER_NAME,
+  deletePendingReply,
   extractRecentBuyerMessages,
   formatMessagesForPrompt,
   listPendingReplies,
+  savePendingReply,
 } from '../session';
 import { ChatFingerprint, ParsedChatMessage } from '../types';
-import { readMessages, readParsedChat, openChat, openChatByBuyerName, scanBuyerList } from './read';
+import { openChat, openChatByBuyerName, readMessages, readParsedChat, scanBuyerList } from './read';
 import { sendReply } from './send';
 import {
+  activateReception,
   clickAt,
   closePopups,
   getNewConsultationWindowInfo,
@@ -34,13 +37,7 @@ import {
 } from './state';
 import { appendAuditLog } from './audit-log';
 
-type SessionStatus =
-  | 'needs-intro'
-  | 'waiting-ai'
-  | 'ai-ready'
-  | 'watching'
-  | 'queued';
-
+type SessionStatus = 'needs-intro' | 'waiting-ai' | 'ai-ready' | 'queued';
 type ParsedChatResult = Awaited<ReturnType<typeof readParsedChat>>;
 
 interface BuyerSessionTask {
@@ -49,40 +46,76 @@ interface BuyerSessionTask {
   latestTranscript: string;
   latestPromptBody: string;
   recentBuyerMessages: ParsedChatMessage[];
-  currentRoundId: string;
+  latestRoundId: string;
+  lastMessageSenderRole: 'buyer' | 'seller' | 'unknown';
   introSent: boolean;
-  refreshQuickReplySentRoundId: string;
-  queueNoticeSent: boolean;
-  aiRequestedRoundId: string;
-  aiReadyRoundId: string;
+  queueNoticeSentRoundId: string;
+  aiRequestRoundId: string;
+  aiRequested: boolean;
+  aiReady: boolean;
   aiDraft: string;
   aiTimedOut: boolean;
   aiError: string;
-  aiAttemptRoundId: string;
-  aiAttemptCount: number;
   status: SessionStatus;
   statusNote: string;
   createdAtMs: number;
   updatedAtMs: number;
 }
 
-const INITIAL_THINKING_QUICK_REPLY = '收到，我先看一下您这边的具体情况。';
-const MULTI_MESSAGE_QUICK_REPLIES = [
-  '收到，我会以您最新补充的信息为准继续处理。',
-  '好的，您刚补充的内容我已经看到，我继续为您核对。',
-  '明白了，我按您最新发来的内容继续确认。',
-  '好的，我会结合您刚刚补充的情况继续处理。',
+const INITIAL_THINKING_QUICK_REPLIES = [
+  '收到，我先看一下您这边的具体情况。',
+  '好的，我先为您核对一下当前情况。',
+  '收到，我先结合您说的内容看一下。',
+  '明白了，我先帮您确认一下具体情况。',
+  '好的，我先查看一下您这边的问题。',
+  '收到，我这边先了解一下具体情况。',
+  '好的，我先按您刚说的情况核对一下。',
+  '明白，我先帮您看一下当前情况。',
+  '收到，我先为您确认一下相关情况。',
+  '好的，我先看一下您这里的具体问题。',
+  '收到，我先核实一下您反馈的情况。',
+  '明白了，我先帮您查看一下。',
+  '好的，我先根据您提供的信息确认一下。',
+  '收到，我先这边帮您看一下。',
+  '好的，我先了解一下您当前的情况。',
+  '收到，我先替您核对一下。',
+  '明白，我先确认下您这边的具体情况。',
+  '好的，我先帮您看看这个情况。',
+  '收到，我先按您描述的内容查一下。',
+  '好的，我先为您看一下这边的情况。',
 ];
-const QUEUE_NOTICE_REPLY = '您好，我已收到您的消息，当前正在依次处理咨询，稍后会优先根据您最新消息回复您。';
-const AI_MAX_RETRY_PER_ROUND = 2;
+
+const QUEUE_NOTICE_REPLIES = [
+  '您好，我已收到您的消息，当前正在依次处理咨询，稍后会优先根据您最新消息回复您。',
+  '您好，消息已经收到，这边正在依次处理当前咨询，稍后会尽快按您最新内容回复您。',
+  '您好，我这边已经看到您的消息，当前咨询较多，稍后会根据您最新发送的内容尽快回复您。',
+  '您好，已收到您的咨询，这边正在按顺序处理，稍后会优先结合您最新消息回复您。',
+  '您好，您的消息我已经收到了，当前正在依次处理会话，稍后尽快回复您。',
+  '您好，已经收到您的消息，这边会按当前排队顺序处理，并以您最新发送的内容为准回复您。',
+  '您好，我已看到您的消息，当前正在处理中其他咨询，稍后会尽快回复您这边。',
+  '您好，消息已收到，这边正在依次接待，稍后会结合您最新补充的信息回复您。',
+  '您好，您的咨询我这边已经收到，当前会按顺序处理，稍后尽快联系您。',
+  '您好，已收到您的消息，请您稍等一下，这边会根据您最新发送的内容尽快回复。',
+  '您好，我这边已经收到您的咨询，当前正在依次处理，稍后会优先回复您最新的问题。',
+  '您好，消息已经看到，这边会按顺序继续处理，稍后尽快给您答复。',
+  '您好，已收到您的咨询内容，这边正在逐一处理消息，稍后会回复您。',
+  '您好，您的消息已收到，当前会按顺序接待，稍后结合最新内容尽快回复您。',
+  '您好，我已收到您发来的消息，这边正在处理当前咨询，稍后马上继续回复您。',
+  '您好，消息我这边已经看到了，当前正在依次处理会话，稍后会尽快回复您。',
+  '您好，已收到您的消息，请您稍候，这边会按您最新补充的内容继续处理并回复您。',
+  '您好，我这边已收到您的咨询，当前正在排队处理中，稍后会尽快回复您。',
+  '您好，消息收到，这边会按顺序处理当前咨询，稍后根据您最新消息回复您。',
+  '您好，我已经看到您的消息，当前正在逐一处理，稍后会尽快给您回复。',
+];
 
 let isRunning = false;
 let autoReplyEnabled = true;
 let monitorLoopCount = 0;
-// 运行期只允许一个活跃买家操作 GUI，其余买家进入队列等待，避免线程和窗口焦点互相打架。
 let activeBuyerSession: BuyerSessionTask | null = null;
 const queuedBuyerSessions = new Map<string, BuyerSessionTask>();
+const queuedBuyerOrder: string[] = [];
 const inflightAiRequests = new Set<string>();
+const completedRoundKeys = new Set<string>();
 
 function sleep(ms: number): void {
   execSync(`sleep ${Math.max(0, ms) / 1000}`);
@@ -92,17 +125,25 @@ function isSameBuyer(expected: string, actual: string): boolean {
   const left = expected.trim();
   const right = actual.trim();
   if (!left || !right) return false;
-  return left === right
-    || left.includes(right)
-    || right.includes(left);
+  return left === right || left.includes(right) || right.includes(left);
 }
 
 function createRoundId(fingerprint: ChatFingerprint): string {
   return `${fingerprint.lastMessageAt}::${fingerprint.lastBuyerMessage}`;
 }
 
-function createReplyKey(buyerName: string, roundId: string, kind: string, text: string): string {
-  return `${buyerName}::${roundId}::${kind}::${text.trim()}`;
+function createCompletedRoundKey(buyerName: string, roundId: string): string {
+  return `${buyerName}::${roundId}`;
+}
+
+function pickRandomReply(pool: string[]): string {
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function normalizeAIReply(text: string): string {
+  return text.startsWith(AI_SENDER_PREFIX)
+    ? text
+    : `${AI_SENDER_PREFIX} ${text}`.trim();
 }
 
 function buildPromptBody(parsedMessages: ParsedChatMessage[], fingerprint: ChatFingerprint): {
@@ -145,29 +186,16 @@ function looksLikeContaminatedTranscript(transcript: string): boolean {
     || trimmed.includes('/qianniu-automation/data/');
 }
 
-function pickRefreshQuickReply(session: BuyerSessionTask): string {
-  const pool = session.recentBuyerMessages.length >= 2
-    ? MULTI_MESSAGE_QUICK_REPLIES
-    : [MULTI_MESSAGE_QUICK_REPLIES[0]];
-  return pool[Math.floor(Math.random() * pool.length)];
-}
-
 function hasNewConsultationWindow(): boolean {
   const windowNames = getQianniuWindowNames();
   const matchedWindows = windowNames.filter(name => name.trim().endsWith('消息提醒'));
-  const blockedWindows = windowNames.filter(name => name.trim().endsWith('消息通知'));
-  appendAuditLog('new-consultation-check', {
-    windowNames,
-    matchedWindows,
-    blockedWindows,
-    matched: matchedWindows.length > 0,
-  });
   return matchedWindows.length > 0;
 }
 
 function updateRuntimeForSession(note?: string): void {
-  const queueNames = Array.from(queuedBuyerSessions.keys());
+  const queueNames = queuedBuyerOrder.filter(buyerName => queuedBuyerSessions.has(buyerName));
   const session = activeBuyerSession;
+
   if (!session) {
     updateRuntimeSession({
       buyerName: '',
@@ -177,10 +205,8 @@ function updateRuntimeForSession(note?: string): void {
       transcriptPreview: '',
       buyerMessagesPreview: [],
       lastAIReply: '',
-      status: queueNames.length > 0 ? 'queue-waiting' : 'idle',
-      statusNote: note || (queueNames.length > 0
-        ? `排队 ${queueNames.length} 人：${queueNames.join(', ')}`
-        : ''),
+      status: queueNames.length > 0 ? 'queued' : 'idle',
+      statusNote: note || (queueNames.length > 0 ? `排队 ${queueNames.length} 人：${queueNames.join(', ')}` : ''),
     });
     return;
   }
@@ -190,7 +216,7 @@ function updateRuntimeForSession(note?: string): void {
     tailSignature: session.latestFingerprint.tailSignature,
     lastMessageAt: session.latestFingerprint.lastMessageAt,
     parsedMessageCount: session.latestFingerprint.messageCount,
-    transcriptPreview: session.latestTranscript || '',
+    transcriptPreview: session.latestTranscript,
     buyerMessagesPreview: session.recentBuyerMessages.map(message => formatMessagesForPrompt([message])),
     lastAIReply: session.aiDraft || '',
     status: session.status,
@@ -198,26 +224,26 @@ function updateRuntimeForSession(note?: string): void {
   });
 }
 
-function createSessionFromObservation(chat: ParsedChatResult, status: SessionStatus): BuyerSessionTask {
+function createSessionFromChat(chat: ParsedChatResult, status: SessionStatus): BuyerSessionTask {
   const { promptBody, recentBuyerMessages } = buildPromptBody(chat.parsedMessages, chat.fingerprint);
   const now = Date.now();
+  const lastMessage = chat.parsedMessages[chat.parsedMessages.length - 1];
   return {
     buyerName: chat.fingerprint.buyerName,
     latestFingerprint: chat.fingerprint,
     latestTranscript: chat.transcript,
     latestPromptBody: promptBody,
     recentBuyerMessages,
-    currentRoundId: createRoundId(chat.fingerprint),
+    latestRoundId: createRoundId(chat.fingerprint),
+    lastMessageSenderRole: lastMessage?.senderRole || 'unknown',
     introSent: false,
-    refreshQuickReplySentRoundId: '',
-    queueNoticeSent: false,
-    aiRequestedRoundId: '',
-    aiReadyRoundId: '',
+    queueNoticeSentRoundId: '',
+    aiRequestRoundId: '',
+    aiRequested: false,
+    aiReady: false,
     aiDraft: '',
     aiTimedOut: false,
     aiError: '',
-    aiAttemptRoundId: '',
-    aiAttemptCount: 0,
     status,
     statusNote: status === 'queued' ? '已进入队列等待处理' : '准备发送首句思考语',
     createdAtMs: now,
@@ -225,49 +251,21 @@ function createSessionFromObservation(chat: ParsedChatResult, status: SessionSta
   };
 }
 
-function syncSessionFromObservation(
-  session: BuyerSessionTask,
-  chat: ParsedChatResult,
-  nextStatusWhenRoundChanges: SessionStatus
-): boolean {
-  const previousRoundId = session.currentRoundId;
+function updateSessionFromChat(session: BuyerSessionTask, chat: ParsedChatResult): boolean {
   const { promptBody, recentBuyerMessages } = buildPromptBody(chat.parsedMessages, chat.fingerprint);
+  const previousRoundId = session.latestRoundId;
+  const nextRoundId = createRoundId(chat.fingerprint);
+  const lastMessage = chat.parsedMessages[chat.parsedMessages.length - 1];
+
   session.latestFingerprint = chat.fingerprint;
   session.latestTranscript = chat.transcript;
   session.latestPromptBody = promptBody;
   session.recentBuyerMessages = recentBuyerMessages;
+  session.latestRoundId = nextRoundId;
+  session.lastMessageSenderRole = lastMessage?.senderRole || 'unknown';
   session.updatedAtMs = Date.now();
 
-  const nextRoundId = createRoundId(chat.fingerprint);
-  if (nextRoundId === previousRoundId) {
-    return false;
-  }
-
-  session.currentRoundId = nextRoundId;
-  session.aiRequestedRoundId = '';
-  session.aiReadyRoundId = '';
-  session.aiDraft = '';
-  session.aiTimedOut = false;
-  session.aiError = '';
-  session.aiAttemptRoundId = '';
-  session.aiAttemptCount = 0;
-  session.status = nextStatusWhenRoundChanges;
-  session.statusNote = session.introSent
-    ? '检测到买家新消息，准备进入下一轮'
-    : '首次接待，准备发送首句思考语';
-  appendAuditLog('buyer-round-changed', {
-    buyerName: session.buyerName,
-    previousRoundId,
-    nextRoundId,
-    status: session.status,
-  });
-  return true;
-}
-
-function normalizeAIReply(text: string): string {
-  return text.startsWith(AI_SENDER_PREFIX)
-    ? text
-    : `${AI_SENDER_PREFIX} ${text}`.trim();
+  return previousRoundId !== nextRoundId;
 }
 
 function resolveServicePromptIfNeeded(stage: string): void {
@@ -315,7 +313,7 @@ async function readCurrentChat(reason: string): Promise<ParsedChatResult | null>
 
 async function focusBuyerAndRead(buyerName: string, reason: string): Promise<ParsedChatResult | null> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    // 每次读取前都强制重新点选左侧买家，避免剪贴板仍停留在上一个会话。
+    // 每次读取前都强制点回左侧买家，确保复制的是当前目标会话。
     const focused = openChatByBuyerName(buyerName);
     appendAuditLog('buyer-focus-attempt', {
       buyerName,
@@ -350,113 +348,296 @@ async function focusBuyerAndRead(buyerName: string, reason: string): Promise<Par
   return null;
 }
 
-function sendSessionReply(session: BuyerSessionTask, text: string, kind: 'intro' | 'refresh' | 'queue' | 'ai'): boolean {
-  const replyKey = createReplyKey(session.buyerName, session.currentRoundId, kind, text);
+function sendSessionReply(session: BuyerSessionTask, text: string, kind: 'intro' | 'queue' | 'ai'): boolean {
   appendAuditLog('session-reply-send', {
     buyerName: session.buyerName,
-    roundId: session.currentRoundId,
+    roundId: session.latestRoundId,
     kind,
     preview: text.slice(0, 120),
   });
   const ok = sendReply(text);
   appendAuditLog('session-reply-result', {
     buyerName: session.buyerName,
-    roundId: session.currentRoundId,
+    roundId: session.latestRoundId,
     kind,
     preview: text.slice(0, 120),
-    replyKey,
     ok,
   }, ok ? 'info' : 'warn');
   return ok;
 }
 
-function startAIRequest(session: BuyerSessionTask): void {
-  const requestRoundId = session.currentRoundId;
-  const requestKey = `${session.buyerName}::${requestRoundId}`;
-  if (inflightAiRequests.has(requestKey)) {
-    session.status = 'waiting-ai';
-    session.statusNote = 'AI 正在处理中';
+function markCompletedRound(buyerName: string, roundId: string, reason: string): void {
+  completedRoundKeys.add(createCompletedRoundKey(buyerName, roundId));
+  appendAuditLog('buyer-round-completed', {
+    buyerName,
+    roundId,
+    reason,
+  });
+}
+
+function createPendingReplyId(): string {
+  return `pending_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function saveAiDraftToPending(session: BuyerSessionTask, currentChat: ParsedChatResult, reason: string): void {
+  if (!session.aiDraft.trim()) {
+    appendAuditLog('pending-reply-skip', {
+      buyerName: session.buyerName,
+      roundId: session.aiRequestRoundId || session.latestRoundId,
+      reason: 'empty-ai-draft',
+      pendingReason: reason,
+    }, 'warn');
     return;
   }
 
-  if (session.aiAttemptRoundId !== requestRoundId) {
-    session.aiAttemptRoundId = requestRoundId;
-    session.aiAttemptCount = 0;
+  const pendingId = createPendingReplyId();
+  savePendingReply({
+    id: pendingId,
+    createdAt: new Date().toISOString(),
+    buyerName: session.buyerName,
+    requestedFingerprint: session.latestFingerprint,
+    currentFingerprint: currentChat.fingerprint,
+    originalTranscript: session.latestTranscript,
+    draft: session.aiDraft,
+    reason,
+    status: 'pending',
+    note: '异买家打断，等待人工处理',
+  });
+  appendAuditLog('pending-reply-saved', {
+    pendingId,
+    buyerName: session.buyerName,
+    currentBuyerName: currentChat.fingerprint.buyerName,
+    roundId: session.aiRequestRoundId || session.latestRoundId,
+    reason,
+    draftPreview: session.aiDraft.slice(0, 300),
+  }, 'warn');
+  setRuntimePendingReplyCount(listPendingReplies().filter(reply => reply.status !== 'resolved' && reply.status !== 'ignored').length);
+  appendRuntimeLog(`AI 草稿已转待发 ${pendingId}，买家 ${session.buyerName}`, 'warn');
+  try {
+    execSync('afplay /System/Library/Sounds/Glass.aiff', { timeout: 2000 });
+  } catch {
+    // 忽略提示音失败
   }
-  session.aiAttemptCount += 1;
-  session.aiRequestedRoundId = requestRoundId;
-  session.aiReadyRoundId = '';
+}
+
+function listPendingRepliesByBuyer(buyerName: string): ReturnType<typeof listPendingReplies> {
+  return listPendingReplies().filter(reply =>
+    reply.status !== 'resolved'
+    && reply.status !== 'ignored'
+    && isSameBuyer(reply.buyerName, buyerName)
+  );
+}
+
+async function buildPendingReplyDeliveryText(buyerName: string): Promise<string | null> {
+  const pendingReplies = listPendingRepliesByBuyer(buyerName);
+  if (pendingReplies.length === 0) return null;
+
+  if (pendingReplies.length === 1) {
+    return `我们继续说，${pendingReplies[0].draft.trim()} 如果您这边有新的情况，也欢迎继续告诉我。`;
+  }
+
+  const summaryPrompt = [
+    `当前店铺卖家账号名是：${SELLER_NAME}`,
+    `当前买家账号名是：${buyerName}`,
+    '下面这些内容是之前没来得及发给同一个买家的多条待发客服回复，请你合并整理成一条自然、连贯、专业的客服回复。',
+    '要求：',
+    '1. 必须保留核心信息，不要遗漏关键答复。',
+    '2. 语气自然专业，不要生硬罗列。',
+    '3. 控制在 180 字以内。',
+    '4. 不要输出解释，只输出最终要发给买家的话。',
+    '',
+    '待发回复如下：',
+    pendingReplies.map((reply, index) => `${index + 1}. ${reply.draft}`).join('\n'),
+  ].join('\n');
+
+  try {
+    const response = await askAI({
+      messages: [{ role: 'user', content: summaryPrompt }],
+      max_tokens: 500,
+    });
+    const merged = normalizeAIReply(response.content || '').trim();
+    if (!merged) {
+      return `我们继续说，${pendingReplies.map(reply => reply.draft.trim()).join(' ')} 如果您这边有新的情况，也欢迎继续告诉我。`;
+    }
+    return `我们继续说，${merged} 如果您这边有新的情况，也欢迎继续告诉我。`;
+  } catch (error) {
+    appendAuditLog('pending-reply-merge-failed', {
+      buyerName,
+      count: pendingReplies.length,
+      error: String(error),
+    }, 'warn');
+    return `我们继续说，${pendingReplies.map(reply => reply.draft.trim()).join(' ')} 如果您这边有新的情况，也欢迎继续告诉我。`;
+  }
+}
+
+async function flushPendingRepliesForBuyer(buyerName: string): Promise<boolean> {
+  const pendingReplies = listPendingRepliesByBuyer(buyerName);
+  if (pendingReplies.length === 0) {
+    return false;
+  }
+
+  const deliveryText = await buildPendingReplyDeliveryText(buyerName);
+  if (!deliveryText) {
+    appendAuditLog('pending-reply-flush-skip', {
+      buyerName,
+      reason: 'empty-delivery-text',
+      count: pendingReplies.length,
+    }, 'warn');
+    return false;
+  }
+
+  const focusedChat = await focusBuyerAndRead(buyerName, 'flush-pending');
+  if (!focusedChat) {
+    appendAuditLog('pending-reply-flush-skip', {
+      buyerName,
+      reason: 'focus-failed',
+      count: pendingReplies.length,
+    }, 'warn');
+    return false;
+  }
+
+  const tempSession = createSessionFromChat(focusedChat, 'ai-ready');
+  tempSession.statusNote = `发送 ${pendingReplies.length} 条待发汇总消息`;
+  updateRuntimeForSession(tempSession.statusNote);
+  const ok = sendSessionReply(tempSession, deliveryText, 'ai');
+  if (!ok) {
+    appendAuditLog('pending-reply-flush-failed', {
+      buyerName,
+      count: pendingReplies.length,
+    }, 'warn');
+    return false;
+  }
+
+  for (const reply of pendingReplies) {
+    deletePendingReply(reply.id);
+  }
+  setRuntimePendingReplyCount(listPendingReplies().filter(reply => reply.status !== 'resolved' && reply.status !== 'ignored').length);
+  appendAuditLog('pending-reply-flush-finish', {
+    buyerName,
+    count: pendingReplies.length,
+    preview: deliveryText.slice(0, 300),
+  }, 'warn');
+  appendRuntimeLog(`已向买家 ${buyerName} 发出 ${pendingReplies.length} 条待发汇总消息`, 'warn');
+  return true;
+}
+
+function enqueueBuyerSession(session: BuyerSessionTask): void {
+  queuedBuyerSessions.set(session.buyerName, session);
+  if (!queuedBuyerOrder.includes(session.buyerName)) {
+    queuedBuyerOrder.push(session.buyerName);
+  }
+}
+
+function dequeueNextBuyerSession(): BuyerSessionTask | null {
+  while (queuedBuyerOrder.length > 0) {
+    const buyerName = queuedBuyerOrder.shift()!;
+    const session = queuedBuyerSessions.get(buyerName) || null;
+    if (!session) continue;
+    queuedBuyerSessions.delete(buyerName);
+    return session;
+  }
+  return null;
+}
+
+function finishActiveBuyer(reason: string): void {
+  if (!activeBuyerSession) return;
+  appendAuditLog('buyer-finished', {
+    buyerName: activeBuyerSession.buyerName,
+    roundId: activeBuyerSession.latestRoundId,
+    reason,
+  });
+  appendRuntimeLog(`结束买家 ${activeBuyerSession.buyerName} 当前任务：${reason}`);
+  activeBuyerSession = null;
+
+  const nextQueued = dequeueNextBuyerSession();
+  if (nextQueued) {
+    nextQueued.status = 'needs-intro';
+    nextQueued.statusNote = '从队列恢复，准备发送首句思考语';
+    activeBuyerSession = nextQueued;
+    appendAuditLog('buyer-resumed', {
+      buyerName: nextQueued.buyerName,
+      roundId: nextQueued.latestRoundId,
+      queueRemaining: queuedBuyerOrder.length,
+    }, 'warn');
+  }
+}
+
+function startAIRequest(session: BuyerSessionTask): void {
+  const requestKey = `${session.buyerName}::${session.aiRequestRoundId}`;
+  if (inflightAiRequests.has(requestKey)) {
+    return;
+  }
+
+  session.aiRequested = true;
+  session.aiReady = false;
   session.aiDraft = '';
   session.aiTimedOut = false;
   session.aiError = '';
   session.status = 'waiting-ai';
-  session.statusNote = `等待 AI 第 ${session.aiAttemptCount} 次返回`;
+  session.statusNote = '已发送 AI 请求，等待返回';
   inflightAiRequests.add(requestKey);
 
   appendAuditLog('ai-request-start', {
     buyerName: session.buyerName,
-    roundId: requestRoundId,
-    attempt: session.aiAttemptCount,
+    requestRoundId: session.aiRequestRoundId,
+    currentRoundId: session.latestRoundId,
     promptPreview: session.latestPromptBody.slice(0, 1000),
   });
-  updateRuntimeForSession();
-  appendRuntimeLog(`发送 AI 请求，买家 ${session.buyerName}，第 ${session.aiAttemptCount} 次`);
 
   askAIAsync(
     { messages: [{ role: 'user', content: buildAiPrompt(session.latestPromptBody) }] },
     (response) => {
       try {
-        // AI 回调只写内存态，不直接碰 GUI；真正发送统一交回主轮询线程。
         const latestSession = activeBuyerSession && isSameBuyer(activeBuyerSession.buyerName, session.buyerName)
           ? activeBuyerSession
           : queuedBuyerSessions.get(session.buyerName) || null;
         if (!latestSession) {
           appendAuditLog('ai-request-drop', {
             buyerName: session.buyerName,
-            roundId: requestRoundId,
+            requestRoundId: session.aiRequestRoundId,
             reason: 'session-missing',
           }, 'warn');
           return;
         }
 
-        if (latestSession.currentRoundId !== requestRoundId) {
-          appendAuditLog('ai-request-stale', {
+        if (latestSession.aiRequestRoundId !== session.aiRequestRoundId) {
+          appendAuditLog('ai-request-drop', {
             buyerName: session.buyerName,
-            requestRoundId,
-            currentRoundId: latestSession.currentRoundId,
+            requestRoundId: session.aiRequestRoundId,
+            currentRequestRoundId: latestSession.aiRequestRoundId,
+            reason: 'request-round-changed',
           }, 'warn');
           return;
         }
 
         if (response.timedOut || response.error) {
-          latestSession.aiRequestedRoundId = '';
-          latestSession.aiReadyRoundId = '';
+          latestSession.aiReady = false;
           latestSession.aiDraft = '';
           latestSession.aiTimedOut = !!response.timedOut;
           latestSession.aiError = response.error || 'UNKNOWN';
           latestSession.status = 'waiting-ai';
           latestSession.statusNote = response.timedOut
-            ? 'AI 超时，准备重试'
+            ? 'AI 超时，等待当前任务结束'
             : `AI 失败：${response.error}`;
           appendAuditLog('ai-request-failed', {
             buyerName: session.buyerName,
-            roundId: requestRoundId,
+            requestRoundId: session.aiRequestRoundId,
             timedOut: !!response.timedOut,
             error: response.error || '',
-            attempt: latestSession.aiAttemptCount,
           }, response.timedOut ? 'warn' : 'error');
           return;
         }
 
-        latestSession.aiReadyRoundId = requestRoundId;
+        latestSession.aiReady = true;
         latestSession.aiDraft = normalizeAIReply(response.content || '');
         latestSession.aiTimedOut = false;
         latestSession.aiError = '';
         latestSession.status = 'ai-ready';
-        latestSession.statusNote = 'AI 已返回，待主线程发送';
+        latestSession.statusNote = 'AI 已返回，等待发送';
         appendAuditLog('ai-request-finish', {
           buyerName: session.buyerName,
-          roundId: requestRoundId,
+          requestRoundId: session.aiRequestRoundId,
+          currentRoundId: latestSession.latestRoundId,
           responsePreview: latestSession.aiDraft.slice(0, 300),
         });
       } finally {
@@ -466,93 +647,7 @@ function startAIRequest(session: BuyerSessionTask): void {
   );
 }
 
-async function sendQueueNoticeIfNeeded(session: BuyerSessionTask): Promise<void> {
-  if (session.queueNoticeSent) {
-    appendAuditLog('queue-notice-skip', {
-      buyerName: session.buyerName,
-      reason: 'already-sent',
-    });
-    return;
-  }
-
-  const chat = await focusBuyerAndRead(session.buyerName, 'queue-notice');
-  if (!chat) {
-    appendAuditLog('queue-notice-focus-failed', {
-      buyerName: session.buyerName,
-    }, 'warn');
-    return;
-  }
-
-  syncSessionFromObservation(session, chat, 'queued');
-  const ok = sendSessionReply(session, QUEUE_NOTICE_REPLY, 'queue');
-  if (ok) {
-    session.queueNoticeSent = true;
-    session.status = 'queued';
-    session.statusNote = '已发送排队提示，等待当前买家处理完成';
-    appendRuntimeLog(`已向排队买家 ${session.buyerName} 发送排队提示`);
-  }
-}
-
-function upsertQueuedBuyer(chat: ParsedChatResult): BuyerSessionTask {
-  const existing = queuedBuyerSessions.get(chat.fingerprint.buyerName);
-  if (existing) {
-    syncSessionFromObservation(existing, chat, 'queued');
-    existing.status = 'queued';
-    existing.statusNote = existing.queueNoticeSent
-      ? '排队中，已更新为最新消息'
-      : '排队中，等待发送排队提示';
-    queuedBuyerSessions.set(existing.buyerName, existing);
-    return existing;
-  }
-
-  const created = createSessionFromObservation(chat, 'queued');
-  created.statusNote = '排队中，等待发送排队提示';
-  queuedBuyerSessions.set(created.buyerName, created);
-  appendAuditLog('buyer-queued', {
-    buyerName: created.buyerName,
-    roundId: created.currentRoundId,
-  }, 'warn');
-  appendRuntimeLog(`买家 ${created.buyerName} 已进入排队`);
-  return created;
-}
-
-function promoteNextQueuedBuyer(): void {
-  const firstEntry = queuedBuyerSessions.entries().next();
-  if (firstEntry.done) {
-    activeBuyerSession = null;
-    updateRuntimeForSession('当前无活跃会话');
-    return;
-  }
-
-  const [buyerName, session] = firstEntry.value;
-  queuedBuyerSessions.delete(buyerName);
-  session.status = session.introSent ? 'waiting-ai' : 'needs-intro';
-  session.statusNote = session.introSent
-    ? '从队列恢复，准备继续当前轮次'
-    : '从队列恢复，准备发送首句思考语';
-  activeBuyerSession = session;
-  appendAuditLog('buyer-resumed', {
-    buyerName: session.buyerName,
-    roundId: session.currentRoundId,
-    queueRemaining: queuedBuyerSessions.size,
-  }, 'warn');
-  appendRuntimeLog(`恢复排队买家 ${session.buyerName}`);
-  updateRuntimeForSession();
-}
-
-function finishActiveBuyer(reason: string): void {
-  if (!activeBuyerSession) return;
-  appendAuditLog('buyer-finished', {
-    buyerName: activeBuyerSession.buyerName,
-    roundId: activeBuyerSession.currentRoundId,
-    reason,
-  });
-  appendRuntimeLog(`结束买家 ${activeBuyerSession.buyerName} 当前任务：${reason}`);
-  activeBuyerSession = null;
-  promoteNextQueuedBuyer();
-}
-
-async function handleReminderWindow(): Promise<void> {
+async function handleNewConsultationReminder(): Promise<void> {
   const consultationWindow = getNewConsultationWindowInfo();
   if (!consultationWindow) {
     appendAuditLog('new-consultation-race-miss', {
@@ -586,17 +681,36 @@ async function handleReminderWindow(): Promise<void> {
     return;
   }
 
+  const roundId = createRoundId(chat.fingerprint);
   appendAuditLog('reminder-chat-read', {
     buyerName: chat.fingerprint.buyerName,
-    roundId: createRoundId(chat.fingerprint),
+    roundId,
     tailSignature: chat.fingerprint.tailSignature,
   });
 
+  if (completedRoundKeys.has(createCompletedRoundKey(chat.fingerprint.buyerName, roundId))) {
+    appendAuditLog('reminder-chat-skip', {
+      buyerName: chat.fingerprint.buyerName,
+      roundId,
+      reason: 'round-already-completed',
+    }, 'warn');
+    return;
+  }
+
   if (!activeBuyerSession) {
-    activeBuyerSession = createSessionFromObservation(chat, 'needs-intro');
+    const flushedPending = await flushPendingRepliesForBuyer(chat.fingerprint.buyerName);
+    if (flushedPending) {
+      markCompletedRound(chat.fingerprint.buyerName, roundId, 'pending-flushed');
+      updateRuntimeForSession(`买家 ${chat.fingerprint.buyerName} 已优先发送待发消息`);
+      return;
+    }
+  }
+
+  if (!activeBuyerSession) {
+    activeBuyerSession = createSessionFromChat(chat, 'needs-intro');
     appendAuditLog('active-session-created', {
       buyerName: activeBuyerSession.buyerName,
-      roundId: activeBuyerSession.currentRoundId,
+      roundId: activeBuyerSession.latestRoundId,
       source: 'reminder-window',
     });
     appendRuntimeLog(`接管新买家 ${activeBuyerSession.buyerName}`);
@@ -605,133 +719,150 @@ async function handleReminderWindow(): Promise<void> {
   }
 
   if (isSameBuyer(activeBuyerSession.buyerName, chat.fingerprint.buyerName)) {
-    const roundChanged = syncSessionFromObservation(activeBuyerSession, chat, 'waiting-ai');
-    activeBuyerSession.statusNote = roundChanged
-      ? '提醒窗口确认同一买家有新消息'
-      : '提醒窗口确认同一买家，无新增消息';
-    appendAuditLog('active-session-reminder-refresh', {
+    const flushedPending = await flushPendingRepliesForBuyer(chat.fingerprint.buyerName);
+    if (flushedPending) {
+      markCompletedRound(chat.fingerprint.buyerName, roundId, 'pending-flushed-same-buyer');
+      finishActiveBuyer('pending-flushed-same-buyer');
+      return;
+    }
+
+    const roundChanged = updateSessionFromChat(activeBuyerSession, chat);
+    appendAuditLog('same-buyer-reminder', {
       buyerName: activeBuyerSession.buyerName,
+      roundId: activeBuyerSession.latestRoundId,
       roundChanged,
-      roundId: activeBuyerSession.currentRoundId,
+      aiRequested: activeBuyerSession.aiRequested,
+      aiReady: activeBuyerSession.aiReady,
     });
+
+    if (activeBuyerSession.aiRequested && !activeBuyerSession.aiReady && roundChanged) {
+      const queueReply = pickRandomReply(QUEUE_NOTICE_REPLIES);
+      activeBuyerSession.statusNote = '同一买家继续发消息，发送排队提示并等待 AI';
+      updateRuntimeForSession();
+      const ok = sendSessionReply(activeBuyerSession, queueReply, 'queue');
+      if (ok) {
+        activeBuyerSession.queueNoticeSentRoundId = activeBuyerSession.latestRoundId;
+        appendRuntimeLog(`已向同一买家 ${activeBuyerSession.buyerName} 发送等待提示`);
+      }
+    } else {
+      activeBuyerSession.statusNote = activeBuyerSession.aiReady
+        ? '同一买家有新提醒，等待发送 AI'
+        : '同一买家有新提醒，继续等待 AI';
+    }
+
     updateRuntimeForSession();
     return;
   }
 
-  const queuedSession = upsertQueuedBuyer(chat);
-  await sendQueueNoticeIfNeeded(queuedSession);
-  updateRuntimeForSession(`买家 ${queuedSession.buyerName} 已排队，准备切回 ${activeBuyerSession.buyerName}`);
-}
-
-async function progressActiveBuyer(): Promise<void> {
-  if (!activeBuyerSession) {
-    if (queuedBuyerSessions.size > 0) {
-      promoteNextQueuedBuyer();
-    }
+  const flushedPending = await flushPendingRepliesForBuyer(chat.fingerprint.buyerName);
+  if (flushedPending) {
+    markCompletedRound(chat.fingerprint.buyerName, roundId, 'pending-flushed-other-buyer');
+    updateRuntimeForSession(`买家 ${chat.fingerprint.buyerName} 已优先发送待发消息`);
     return;
   }
 
+  const queuedSession = createSessionFromChat(chat, 'queued');
+  enqueueBuyerSession(queuedSession);
+  appendAuditLog('buyer-queued', {
+    buyerName: queuedSession.buyerName,
+    roundId: queuedSession.latestRoundId,
+  }, 'warn');
+  appendRuntimeLog(`买家 ${queuedSession.buyerName} 进入队列`);
+
+  const queueReply = pickRandomReply(QUEUE_NOTICE_REPLIES);
+  queuedSession.statusNote = `买家 ${queuedSession.buyerName} 排队中，发送等待提示`;
+  updateRuntimeForSession();
+  const ok = sendSessionReply(queuedSession, queueReply, 'queue');
+  if (ok) {
+    queuedSession.queueNoticeSentRoundId = queuedSession.latestRoundId;
+  }
+  updateRuntimeForSession();
+}
+
+async function progressActiveBuyerSession(): Promise<void> {
+  if (!activeBuyerSession) return;
   const session = activeBuyerSession;
+
   const chat = await focusBuyerAndRead(session.buyerName, 'active-progress');
   if (!chat) {
     session.statusNote = '无法重新定位当前买家，下一轮重试';
-    appendRuntimeLog(`无法切回买家 ${session.buyerName}，下一轮重试`, 'warn');
     updateRuntimeForSession();
     return;
   }
 
-  const roundChanged = syncSessionFromObservation(session, chat, session.introSent ? 'waiting-ai' : 'needs-intro');
-  if (roundChanged && session.introSent) {
-    appendRuntimeLog(`买家 ${session.buyerName} 补充了新消息，旧轮次作废`);
+  updateSessionFromChat(session, chat);
+  if (session.lastMessageSenderRole !== 'buyer' && !session.aiReady) {
+    session.statusNote = '当前最后一条不是买家消息，等待新的提醒';
+    updateRuntimeForSession();
+    return;
   }
 
   if (!session.introSent) {
     setRuntimePhase('发送首句快捷语');
-    updateRuntimeForSession('发送首句思考语');
-    const ok = sendSessionReply(session, INITIAL_THINKING_QUICK_REPLY, 'intro');
+    const introReply = pickRandomReply(INITIAL_THINKING_QUICK_REPLIES);
+    session.statusNote = '发送首句思考语';
+    updateRuntimeForSession();
+    const ok = sendSessionReply(session, introReply, 'intro');
     if (!ok) {
       session.statusNote = '首句发送失败，等待下一轮重试';
       updateRuntimeForSession();
       return;
     }
+
     session.introSent = true;
+    session.aiRequestRoundId = session.latestRoundId;
     session.status = 'waiting-ai';
-    session.statusNote = '首句已发，准备请求 AI';
+    session.statusNote = '首句已发，开始请求 AI';
     appendRuntimeLog(`已向买家 ${session.buyerName} 发送首句思考语`);
-  } else if (roundChanged && session.refreshQuickReplySentRoundId !== session.currentRoundId) {
-    setRuntimePhase('发送补充确认语');
-    const refreshReply = pickRefreshQuickReply(session);
-    updateRuntimeForSession('买家补充了新消息，发送继续处理提示');
-    const ok = sendSessionReply(session, refreshReply, 'refresh');
-    if (ok) {
-      session.refreshQuickReplySentRoundId = session.currentRoundId;
-      session.statusNote = '已按最新消息继续处理，准备重新请求 AI';
-      appendRuntimeLog(`已向买家 ${session.buyerName} 发送补充确认语`);
-    }
-  }
-
-  if (session.aiReadyRoundId === session.currentRoundId && session.aiDraft) {
-    setRuntimePhase('发送 AI 回复');
-    updateRuntimeForSession('AI 已返回，准备发送');
-
-    const refreshedChat = await readCurrentChat('before-ai-send');
-    if (!refreshedChat || !isSameBuyer(session.buyerName, refreshedChat.fingerprint.buyerName)) {
-      session.statusNote = '发送前校验买家失败，下一轮重试';
-      updateRuntimeForSession();
-      return;
-    }
-
-    const changedBeforeSend = syncSessionFromObservation(session, refreshedChat, 'waiting-ai');
-    if (changedBeforeSend) {
-      session.statusNote = '发送前发现买家又发新消息，旧 AI 作废';
-      appendAuditLog('ai-send-invalidated', {
-        buyerName: session.buyerName,
-        roundId: session.currentRoundId,
-      }, 'warn');
-      updateRuntimeForSession();
-      return;
-    }
-
-    const ok = sendSessionReply(session, session.aiDraft, 'ai');
-    if (!ok) {
-      session.statusNote = 'AI 发送失败，下一轮重试';
-      updateRuntimeForSession();
-      return;
-    }
-
-    session.status = 'watching';
-    session.statusNote = 'AI 已发送，5 秒后复查是否有新消息';
-    appendRuntimeLog(`AI 回复已发送给 ${session.buyerName}`);
     updateRuntimeForSession();
+    startAIRequest(session);
     return;
   }
 
-  if (session.status === 'watching' && session.aiReadyRoundId === session.currentRoundId) {
-    session.statusNote = '当前轮次无新消息，结束任务';
-    updateRuntimeForSession();
-    finishActiveBuyer('watching-no-change');
-    return;
-  }
-
-  if (session.aiRequestedRoundId === session.currentRoundId && inflightAiRequests.has(`${session.buyerName}::${session.currentRoundId}`)) {
+  if (!session.aiReady) {
     session.status = 'waiting-ai';
-    session.statusNote = '等待 AI 返回中';
+    session.statusNote = '等待 AI 返回';
     updateRuntimeForSession();
     return;
   }
 
-  if (session.aiError || session.aiTimedOut) {
-    if (session.aiAttemptCount >= AI_MAX_RETRY_PER_ROUND) {
-      session.statusNote = `AI 连续失败 ${session.aiAttemptCount} 次，结束当前任务`;
-      updateRuntimeForSession();
-      finishActiveBuyer(session.aiTimedOut ? 'ai-timeout-max-retry' : `ai-error:${session.aiError}`);
-      return;
-    }
+  setRuntimePhase('发送 AI 回复');
+  session.statusNote = 'AI 已返回，准备发送正式回复';
+  updateRuntimeForSession();
+
+  const verifyChat = await focusBuyerAndRead(session.buyerName, 'before-ai-send');
+  if (!verifyChat) {
+    session.statusNote = '发送前买家校验失败，等待下一轮重试';
+    updateRuntimeForSession();
+    return;
   }
 
-  setRuntimePhase('等待 AI');
-  startAIRequest(session);
+  if (!isSameBuyer(session.buyerName, verifyChat.fingerprint.buyerName)) {
+    saveAiDraftToPending(
+      session,
+      verifyChat,
+      `AI 返回后前台已切换到其他买家：原买家=${session.buyerName}，当前买家=${verifyChat.fingerprint.buyerName}`
+    );
+    markCompletedRound(session.buyerName, session.aiRequestRoundId || session.latestRoundId, 'moved-to-pending-different-buyer');
+    session.statusNote = 'AI 草稿已转待发，当前任务结束';
+    updateRuntimeForSession();
+    finishActiveBuyer('ai-moved-to-pending-different-buyer');
+    return;
+  }
+
+  updateSessionFromChat(session, verifyChat);
+  const ok = sendSessionReply(session, session.aiDraft, 'ai');
+  if (!ok) {
+    session.statusNote = 'AI 发送失败，等待下一轮重试';
+    updateRuntimeForSession();
+    return;
+  }
+
+  markCompletedRound(session.buyerName, session.aiRequestRoundId || session.latestRoundId, 'ai-sent');
+  markCompletedRound(session.buyerName, session.latestRoundId, 'ai-sent-latest');
+  session.statusNote = 'AI 已发送，当前任务结束';
   updateRuntimeForSession();
+  finishActiveBuyer('ai-sent');
 }
 
 export function setAutoReplyEnabled(enabled: boolean): void {
@@ -754,11 +885,14 @@ export async function monitorCycle(intervalMs = 5000): Promise<void> {
   monitorLoopCount = 0;
   activeBuyerSession = null;
   queuedBuyerSessions.clear();
+  queuedBuyerOrder.length = 0;
   inflightAiRequests.clear();
+  completedRoundKeys.clear();
 
   setRuntimeRunning(true, 'booting');
   setRuntimeAutoReply(autoReplyEnabled);
   setRuntimePendingReplyCount(listPendingReplies().filter(reply => reply.status !== 'resolved' && reply.status !== 'ignored').length);
+  activateReception();
   appendRuntimeLog(`监听启动，间隔 ${intervalMs}ms`);
 
   console.log(`\n⏳ 监听中，每 ${intervalMs / 1000}s 检查一次...`);
@@ -785,25 +919,28 @@ export async function monitorCycle(intervalMs = 5000): Promise<void> {
         continue;
       }
 
+      activateReception();
+
       if (hasNewConsultationWindow()) {
         setRuntimePhase('处理消息提醒');
-        await handleReminderWindow();
-      } else {
-        appendAuditLog('new-consultation-not-found', {
-          loopCount: monitorLoopCount,
-          activeBuyer: activeBuyerSession?.buyerName || '',
-          queue: Array.from(queuedBuyerSessions.keys()),
-        });
+        await handleNewConsultationReminder();
       }
 
-      setRuntimePhase('推进当前买家');
-      await progressActiveBuyer();
+      if (!activeBuyerSession) {
+        const nextQueued = dequeueNextBuyerSession();
+        if (nextQueued) {
+          nextQueued.status = 'needs-intro';
+          nextQueued.statusNote = '从队列恢复，准备发送首句思考语';
+          activeBuyerSession = nextQueued;
+        }
+      }
 
-      if (!activeBuyerSession && queuedBuyerSessions.size === 0) {
+      if (activeBuyerSession) {
+        setRuntimePhase('推进当前买家');
+        await progressActiveBuyerSession();
+      } else {
         setRuntimePhase('空闲等待');
         updateRuntimeForSession('本轮未发现需要继续处理的买家');
-        appendRuntimeLog('本轮未发现新的客户咨询');
-        console.log(`📋 [${new Date().toLocaleString()}] 无新咨询消息，跳过...`);
       }
     } catch (error) {
       const errorMessage = String(error);

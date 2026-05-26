@@ -34,7 +34,54 @@ export function activateApp(name: string): void {
 
 export function activateReception(): void {
   activateApp(ALIWORKBENCH);
-  execSync('sleep 0.5');
+  execSync('sleep 0.3');
+
+  const script = `
+    tell application "System Events"
+      tell process "${ALIWORKBENCH}"
+        set targetWindow to missing value
+        repeat with i from 1 to count of windows
+          try
+            set w to window i
+            if name of w contains "接待中心" then
+              set targetWindow to w
+              exit repeat
+            end if
+          end try
+        end repeat
+
+        if targetWindow is missing value then
+          return "RECEPTION_NOT_FOUND"
+        end if
+
+        set frontmost to true
+        delay 0.1
+        try
+          perform action "AXRaise" of targetWindow
+        end try
+        delay 0.1
+        try
+          set focused of targetWindow to true
+        end try
+        return "RECEPTION_FOCUSED"
+      end tell
+    end tell
+  `;
+
+  try {
+    const result = runScript(script);
+    if (result !== 'RECEPTION_FOCUSED') {
+      appendAuditLog('reception-activate', {
+        result,
+      }, 'warn');
+    }
+  } catch (error) {
+    appendAuditLog('reception-activate-failed', {
+      error: String(error),
+    }, 'warn');
+  }
+
+  execSync('sleep 0.4');
 }
 
 export function clickAt(x: number, y: number): void {
@@ -77,18 +124,7 @@ function getAllQianniuWindows(): WindowInfo[] {
         end tell
       end tell
     `;
-    const windows = parseWindowList(runScript(script));
-    appendAuditLog('window-scan', {
-      count: windows.length,
-      windows: windows.map(window => ({
-        name: window.name,
-        x: window.x,
-        y: window.y,
-        w: window.w,
-        h: window.h,
-      })),
-    });
-    return windows;
+    return parseWindowList(runScript(script));
   } catch {
     appendAuditLog('window-scan-failed', {}, 'warn');
     return [];
@@ -128,16 +164,17 @@ function isBlockedNewConsultationWindow(windowName: string): boolean {
 
 function findStrictNewConsultationWindow(windows: WindowInfo[]): WindowInfo | null {
   const exactMatch = windows.find(win => getWindowSuffix(win.name) === NEW_CONSULTATION_WINDOW_SUFFIX) || null;
-  appendAuditLog('new-consultation-window-match', {
-    mode: exactMatch ? 'strict' : 'miss',
-    expectedSuffix: NEW_CONSULTATION_WINDOW_SUFFIX,
-    blockedSuffixes: NEW_CONSULTATION_BLOCKED_SUFFIXES,
-    windows: windows.map(win => ({
-      name: win.name,
-      suffix: getWindowSuffix(win.name),
-    })),
-    matched: exactMatch?.name || '',
-  }, exactMatch ? 'info' : 'warn');
+  if (!exactMatch && windows.some(win => getWindowSuffix(win.name) === '消息通知')) {
+    appendAuditLog('new-consultation-window-match', {
+      mode: 'blocked-only',
+      expectedSuffix: NEW_CONSULTATION_WINDOW_SUFFIX,
+      blockedSuffixes: NEW_CONSULTATION_BLOCKED_SUFFIXES,
+      windows: windows.map(win => ({
+        name: win.name,
+        suffix: getWindowSuffix(win.name),
+      })),
+    }, 'warn');
+  }
   return exactMatch;
 }
 
@@ -156,16 +193,6 @@ function resolveWindow(windowName: string, windows: WindowInfo[], pointName?: st
 
   const exact = windows.find(win => win.name === windowName);
   if (exact) {
-    appendAuditLog('window-resolve', {
-      mode: 'exact',
-      request: windowName,
-      pointName: pointName || '',
-      matched: exact.name,
-      x: exact.x,
-      y: exact.y,
-      w: exact.w,
-      h: exact.h,
-    });
     return exact;
   }
 
@@ -189,22 +216,14 @@ function resolveWindow(windowName: string, windows: WindowInfo[], pointName?: st
     });
 
   const resolved = scored[0]?.win || null;
-  appendAuditLog('window-resolve', {
-    mode: resolved ? 'fuzzy' : 'miss',
-    request: windowName,
-    pointName: pointName || '',
-    hints,
-    candidates: scored.slice(0, 5).map(item => ({
-      name: item.win.name,
-      score: item.score,
-      area: item.area,
-      x: item.win.x,
-      y: item.win.y,
-      w: item.win.w,
-      h: item.win.h,
-    })),
-    matched: resolved?.name || '',
-  }, resolved ? 'info' : 'warn');
+  if (!resolved) {
+    appendAuditLog('window-resolve', {
+      mode: 'miss',
+      request: windowName,
+      pointName: pointName || '',
+      hints,
+    }, 'warn');
+  }
   return resolved;
 }
 

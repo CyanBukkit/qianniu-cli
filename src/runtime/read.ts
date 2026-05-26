@@ -171,13 +171,7 @@ export function scanBuyerList(): Buyer[] {
       if (element.w < 20 || element.h < 12) return false;
       return true;
     });
-    const buyers = dedupeBuyers(elements);
-    appendAuditLog('buyer-list-scan', {
-      count: buyers.length,
-      buyers: buyers.map(buyer => buyer.name),
-      bounds: { minX, maxX, minY, maxY },
-    });
-    return buyers;
+    return dedupeBuyers(elements);
   } catch (error) {
     appendAuditLog('buyer-list-scan-failed', {
       error: String(error),
