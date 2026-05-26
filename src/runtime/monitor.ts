@@ -108,6 +108,9 @@ const QUEUE_NOTICE_REPLIES = [
   '您好，我已经看到您的消息，当前正在逐一处理，稍后会尽快给您回复。',
 ];
 
+// 买家确认最多做两次读取，避免在无新消息时反复复制聊天内容拖慢流程。
+const MAX_BUYER_VERIFY_ATTEMPTS = 2;
+
 let isRunning = false;
 let autoReplyEnabled = true;
 let monitorLoopCount = 0;
@@ -279,16 +282,7 @@ function resolveServicePromptIfNeeded(stage: string): void {
 
 async function readCurrentChat(reason: string): Promise<ParsedChatResult | null> {
   resolveServicePromptIfNeeded(`${reason}-before-read`);
-  let chat = await readParsedChat();
-  if (!chat.transcript.trim() || looksLikeContaminatedTranscript(chat.transcript)) {
-    appendAuditLog('chat-read-retry', {
-      reason,
-      transcriptPreview: chat.transcript.slice(0, 300),
-    }, 'warn');
-    sleep(800);
-    resolveServicePromptIfNeeded(`${reason}-retry-before-read`);
-    chat = await readParsedChat();
-  }
+  const chat = await readParsedChat();
 
   if (!chat.transcript.trim() || looksLikeContaminatedTranscript(chat.transcript)) {
     appendAuditLog('chat-read-invalid', {
@@ -312,8 +306,9 @@ async function readCurrentChat(reason: string): Promise<ParsedChatResult | null>
 }
 
 async function focusBuyerAndRead(buyerName: string, reason: string): Promise<ParsedChatResult | null> {
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    // 每次读取前都强制点回左侧买家，确保复制的是当前目标会话。
+  // 这里只允许最多两次完整校验，避免一次发送链路里出现 4~5 次连续复制。
+  for (let attempt = 1; attempt <= MAX_BUYER_VERIFY_ATTEMPTS; attempt += 1) {
+    // 每次读取前都尝试定位目标买家，确保复制的是当前目标会话。
     const focused = openChatByBuyerName(buyerName);
     appendAuditLog('buyer-focus-attempt', {
       buyerName,
@@ -783,21 +778,21 @@ async function progressActiveBuyerSession(): Promise<void> {
   if (!activeBuyerSession) return;
   const session = activeBuyerSession;
 
-  const chat = await focusBuyerAndRead(session.buyerName, 'active-progress');
-  if (!chat) {
-    session.statusNote = '无法重新定位当前买家，下一轮重试';
-    updateRuntimeForSession();
-    return;
-  }
-
-  updateSessionFromChat(session, chat);
-  if (session.lastMessageSenderRole !== 'buyer' && !session.aiReady) {
-    session.statusNote = '当前最后一条不是买家消息，等待新的提醒';
-    updateRuntimeForSession();
-    return;
-  }
-
   if (!session.introSent) {
+    const chat = await focusBuyerAndRead(session.buyerName, 'before-intro-send');
+    if (!chat) {
+      session.statusNote = '首句发送前无法确认买家，下一轮重试';
+      updateRuntimeForSession();
+      return;
+    }
+
+    updateSessionFromChat(session, chat);
+    if (session.lastMessageSenderRole !== 'buyer') {
+      session.statusNote = '当前最后一条不是买家消息，等待新的提醒';
+      updateRuntimeForSession();
+      return;
+    }
+
     setRuntimePhase('发送首句快捷语');
     const introReply = pickRandomReply(INITIAL_THINKING_QUICK_REPLIES);
     session.statusNote = '发送首句思考语';
@@ -821,7 +816,7 @@ async function progressActiveBuyerSession(): Promise<void> {
 
   if (!session.aiReady) {
     session.status = 'waiting-ai';
-    session.statusNote = '等待 AI 返回';
+    session.statusNote = '等待 AI 返回，无新消息时不再重复复制聊天';
     updateRuntimeForSession();
     return;
   }

@@ -4,10 +4,10 @@ import { screenshot, recognizeText } from '../clipboard';
 import { buildChatFingerprint, parseChatTranscript } from '../session';
 import { Buyer } from '../types';
 import { appendAuditLog } from './audit-log';
+import { appendRuntimeLog, updateRuntimeSession } from './state';
 import {
   ALIWORKBENCH,
   RECEPTION,
-  clickAt,
   getChatWindowPosition,
   getReceptionWindowRect,
   loadCalibrateConfig,
@@ -200,8 +200,21 @@ export function openChatByBuyerName(buyerName: string): boolean {
     x: fuzzyMatch.x,
     y: fuzzyMatch.y,
   });
-  clickAt(fuzzyMatch.x, fuzzyMatch.y);
-  execSync('sleep 0.8');
+
+  // 这里先进入纯观测模式：不真正点击左侧买家，只把将要点击的目标写进日志和 TUI。
+  const statusNote = `调试跳过左侧买家点击：目标 ${fuzzyMatch.name} @(${fuzzyMatch.x},${fuzzyMatch.y})`;
+  appendAuditLog('buyer-open-skipped', {
+    buyerName,
+    matchedBuyerName: fuzzyMatch.name,
+    x: fuzzyMatch.x,
+    y: fuzzyMatch.y,
+    reason: 'debug-skip-click',
+  }, 'warn');
+  appendRuntimeLog(statusNote, 'warn');
+  updateRuntimeSession({
+    statusNote,
+  });
+  execSync('sleep 0.2');
   return true;
 }
 
